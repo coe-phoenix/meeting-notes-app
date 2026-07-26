@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const icons = require('./icons');
 
@@ -14,6 +15,11 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const APP_PASSWORD = process.env.APP_PASSWORD;
+// Live-recording segment length (minutes). Configurable so it can be tuned per
+// deployment without touching the client. Falls back to 5 if unset/invalid.
+const SEGMENT_MINUTES = parseFloat(process.env.SEGMENT_MINUTES) > 0
+  ? parseFloat(process.env.SEGMENT_MINUTES)
+  : 5;
 
 const SONIOX_BASE = 'https://api.soniox.com';
 const SONIOX_MODEL = 'stt-async-v5';
@@ -24,6 +30,21 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// Internal-only store for per-session raw transcripts. It lives OUTSIDE public/
+// and every route that touches it sits behind the password gate, so segment
+// transcripts are never publicly reachable.
+const SESSIONS_DIR = path.join(__dirname, 'sessions');
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+// Resolve a session's storage dir, rejecting anything that isn't a plain id
+// (guards against path traversal via a crafted sessionId).
+function sessionDir(id) {
+  if (typeof id !== 'string' || !/^[a-f0-9-]{8,64}$/i.test(id)) {
+    throw new Error('Invalid session id');
+  }
+  return path.join(SESSIONS_DIR, id);
+}
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -279,6 +300,116 @@ app.post(
     }
   }
 );
+
+// Client-readable runtime config (behind the auth gate). Lets the UI pick up the
+// segment interval from .env without hardcoding it.
+app.get('/api/config', (req, res) => {
+  res.json({ segmentMinutes: SEGMENT_MINUTES, segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000) });
+});
+
+// ---------- Live-recording session routes (segment pipeline) ----------
+// Long meetings are recorded in ~5-minute segments. Each segment is transcribed
+// as it arrives and its raw text is stashed server-side; on stop we assemble the
+// full transcript and hand it to Claude once.
+
+// Start a session: mint an id and create its internal transcript directory.
+app.post('/api/session/start', (req, res) => {
+  try {
+    const sessionId = crypto.randomUUID();
+    fs.mkdirSync(sessionDir(sessionId), { recursive: true });
+    res.json({ sessionId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Transcribe a single segment and append its raw text to the session store.
+app.post('/api/transcribe-chunk', upload.single('audio'), async (req, res) => {
+  let sonioxFileId = null;
+  let transcriptionId = null;
+  let tempPath = null;
+
+  try {
+    if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
+
+    const dir = sessionDir(req.body.sessionId);
+    if (!fs.existsSync(dir)) throw new Error('Unknown or expired session');
+
+    const segment = req.file;
+    if (!segment) return res.status(400).json({ error: 'No audio segment provided' });
+    tempPath = segment.path;
+
+    sonioxFileId = await sonioxUploadFile(segment.path, segment.originalname || 'segment');
+    transcriptionId = await sonioxCreateTranscription(sonioxFileId);
+    await sonioxWaitUntilComplete(transcriptionId);
+    const rawText = await sonioxGetTranscript(transcriptionId);
+
+    // Index-named files keep segments in order regardless of which transcription
+    // finishes first, and avoid concurrent-append races.
+    const index = String(Math.max(0, parseInt(req.body.index, 10) || 0)).padStart(6, '0');
+    fs.writeFileSync(path.join(dir, `${index}.txt`), rawText);
+
+    res.json({ ok: true, text: rawText });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (tempPath) {
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); }
+      catch (e) { console.error('Segment temp cleanup failed:', e.message); }
+    }
+    sonioxCleanup(transcriptionId, sonioxFileId);
+  }
+});
+
+// Finalize: stitch the stored segments together and structure with Claude.
+app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }]), async (req, res) => {
+  const tempPaths = [];
+  let dir = null;
+
+  try {
+    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
+
+    dir = sessionDir(req.body.sessionId);
+    if (!fs.existsSync(dir)) throw new Error('Unknown or expired session');
+
+    const rawTranscript = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.txt'))
+      .sort()
+      .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))
+      .join('\n\n')
+      .trim();
+
+    if (!rawTranscript) {
+      throw new Error('No transcript captured for this session — check the recording had audio');
+    }
+
+    const attachmentFiles = (req.files && req.files.attachments) || [];
+    attachmentFiles.forEach((f) => tempPaths.push(f.path));
+    const attachments = attachmentFiles.map((f) => ({
+      mimetype: f.mimetype,
+      base64: fs.readFileSync(f.path).toString('base64'),
+    }));
+
+    const markdown = await claudeStructureNotes(rawTranscript, attachments);
+    res.json({ rawTranscript, markdown });
+
+    // Purge the internal transcript store only after a successful structure,
+    // so a Claude failure leaves the transcript intact for a retry.
+    try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { console.error('Session cleanup failed:', e.message); }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    for (const p of tempPaths) {
+      try { if (fs.existsSync(p)) fs.unlinkSync(p); }
+      catch (e) { console.error('Attachment temp cleanup failed:', e.message); }
+    }
+  }
+});
 
 // ---------- Route: send finalized markdown to Telegram ----------
 // Sent as a document: sidesteps the 4096-char message cap and Markdown parse errors

@@ -74,7 +74,24 @@
 </div>
 
 <script>
-let mediaRecorder, recordedChunks = [], recordedBlob = null, recordedName = 'recording.webm', uploadedAudioFile = null;
+let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
+let currentStream = null, sessionId = null, recording = false;
+let segmentIndex = 0, segmentsTranscribed = 0, segmentTimer = null, pendingUploads = [];
+// Recorder rotation interval. Default 5 min; overridden by SEGMENT_MINUTES in
+// .env, fetched from /api/config at load.
+let SEGMENT_MS = 5 * 60 * 1000;
+
+(async () => {
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) {
+      const cfg = await res.json();
+      if (cfg.segmentMs > 0) SEGMENT_MS = cfg.segmentMs;
+    }
+  } catch (e) {
+    console.warn('Could not load config, using default segment length:', e.message);
+  }
+})();
 
 const recordBtn = document.getElementById('recordBtn');
 const stopBtn = document.getElementById('stopBtn');
@@ -91,7 +108,9 @@ const downloadBtn = document.getElementById('downloadBtn');
 const rawTranscriptBox = document.getElementById('rawTranscript');
 
 function refreshProcessBtn() {
-  processBtn.disabled = !(recordedBlob || uploadedAudioFile);
+  // The manual button only drives the uploaded-file path now; live recording
+  // auto-transcribes per segment and finalizes on Stop.
+  processBtn.disabled = !uploadedAudioFile;
 }
 
 // Service worker: only registers over HTTPS (or localhost). Required for the
@@ -115,43 +134,138 @@ if (!canRecord) {
     : 'In-browser recording needs HTTPS. Upload a voice memo below instead.';
 }
 
+// Begin a fresh 5-minute segment on the shared mic stream.
+function startSegment() {
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(currentStream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = handleSegmentStop;
+  mediaRecorder.start();
+}
+
+// Arm the timer that rotates segments. Stopping the recorder flushes a complete,
+// independently-decodable file (a mid-stream chunk wouldn't carry the container
+// header Soniox needs), which handleSegmentStop then ships off.
+function scheduleRotation() {
+  clearTimeout(segmentTimer);
+  segmentTimer = setTimeout(() => {
+    if (recording && mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+  }, SEGMENT_MS);
+}
+
+function handleSegmentStop() {
+  // Safari/iOS records audio/mp4, Chrome records audio/webm. Use whatever the
+  // recorder actually produced so the file extension and MIME type stay honest.
+  const actualType = (mediaRecorder.mimeType || 'audio/webm').split(';')[0];
+  const ext = actualType.includes('mp4') ? 'm4a' : actualType.includes('ogg') ? 'ogg' : 'webm';
+  const blob = new Blob(recordedChunks, { type: actualType });
+  const index = segmentIndex++;
+  if (blob.size > 0) {
+    pendingUploads.push(uploadSegment(blob, `segment-${index}.${ext}`, index));
+  }
+
+  if (recording) {
+    // Timed rotation: immediately begin the next segment.
+    startSegment();
+    scheduleRotation();
+  } else {
+    // User pressed Stop: once every segment is in, structure the full transcript.
+    finalizeSession();
+  }
+}
+
+async function uploadSegment(blob, name, index) {
+  const fd = new FormData();
+  fd.append('audio', blob, name);
+  fd.append('sessionId', sessionId);
+  fd.append('index', String(index));
+  try {
+    const res = await fetch('/api/transcribe-chunk', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Segment transcription failed');
+    segmentsTranscribed++;
+    if (recording) {
+      recStatus.innerHTML = `<span class="rec-dot"></span> Recording… (${segmentsTranscribed} segment(s) transcribed)`;
+    }
+  } catch (err) {
+    processStatus.textContent = 'Segment error: ' + err.message;
+  }
+}
+
+async function finalizeSession() {
+  if (!sessionId) return;
+  processStatus.textContent = 'Finishing transcription of the last segment…';
+  await Promise.allSettled(pendingUploads);
+
+  processStatus.textContent = 'Structuring notes with Claude…';
+  const fd = new FormData();
+  fd.append('sessionId', sessionId);
+  for (const f of attachmentUpload.files) fd.append('attachments', f, f.name);
+
+  try {
+    const res = await fetch('/api/finalize', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Finalize failed');
+    markdownOutput.value = data.markdown;
+    rawTranscriptBox.value = data.rawTranscript || '';
+    reviewCard.classList.remove('hidden');
+    processStatus.textContent = 'Done. Review and edit below before sending.';
+  } catch (err) {
+    processStatus.textContent = 'Error: ' + err.message;
+  } finally {
+    sessionId = null;
+  }
+}
+
 recordBtn.onclick = async () => {
   if (!canRecord) return;
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  recordedChunks = [];
-  mediaRecorder = new MediaRecorder(stream);
-  mediaRecorder.ondataavailable = (e) => recordedChunks.push(e.data);
-  mediaRecorder.onstop = () => {
-    // Safari/iOS records audio/mp4, Chrome records audio/webm. Use whatever the
-    // recorder actually produced so the file extension and MIME type stay honest.
-    const actualType = (mediaRecorder.mimeType || 'audio/webm').split(';')[0];
-    const ext = actualType.includes('mp4') ? 'm4a' : actualType.includes('ogg') ? 'ogg' : 'webm';
-    recordedBlob = new Blob(recordedChunks, { type: actualType });
-    recordedName = `recording.${ext}`;
-    uploadedAudioFile = null;
-    audioUpload.value = '';
-    refreshProcessBtn();
-    recStatus.textContent = `Recording captured (${ext}).`;
-    // Auto-run transcription as soon as the recording is ready.
-    if (recordedBlob) processBtn.click();
-  };
-  mediaRecorder.start();
+  currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  try {
+    const res = await fetch('/api/session/start', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not start session');
+    sessionId = data.sessionId;
+  } catch (err) {
+    recStatus.textContent = 'Error starting session: ' + err.message;
+    currentStream.getTracks().forEach((t) => t.stop());
+    currentStream = null;
+    return;
+  }
+
+  recording = true;
+  segmentIndex = 0;
+  segmentsTranscribed = 0;
+  pendingUploads = [];
+  uploadedAudioFile = null;
+  audioUpload.value = '';
+  refreshProcessBtn();
+  reviewCard.classList.add('hidden');
+  processStatus.textContent = '';
+
+  startSegment();
+  scheduleRotation();
   recordBtn.classList.add('hidden');
   stopBtn.classList.remove('hidden');
-  recStatus.innerHTML = '<span class="rec-dot"></span> Recording…';
+  const mins = +(SEGMENT_MS / 60000).toFixed(SEGMENT_MS % 60000 ? 1 : 0);
+  recStatus.innerHTML = `<span class="rec-dot"></span> Recording… (auto-transcribing every ${mins} min)`;
 };
 
 stopBtn.onclick = () => {
-  mediaRecorder.stop();
-  mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+  recording = false;
+  clearTimeout(segmentTimer);
   recordBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
+  recStatus.textContent = 'Recording stopped — transcribing the final segment…';
+  // Flushing the last segment triggers handleSegmentStop, which finalizes.
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
 };
 
 audioUpload.onchange = () => {
   if (audioUpload.files[0]) {
     uploadedAudioFile = audioUpload.files[0];
-    recordedBlob = null;
     recStatus.textContent = `Using uploaded file: ${uploadedAudioFile.name}`;
     refreshProcessBtn();
   }
@@ -162,9 +276,7 @@ processBtn.onclick = async () => {
   processStatus.textContent = 'Uploading & transcribing… a long meeting can take several minutes.';
 
   const formData = new FormData();
-  if (recordedBlob) {
-    formData.append('audio', recordedBlob, recordedName);
-  } else if (uploadedAudioFile) {
+  if (uploadedAudioFile) {
     formData.append('audio', uploadedAudioFile, uploadedAudioFile.name);
   }
   for (const f of attachmentUpload.files) {
