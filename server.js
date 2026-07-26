@@ -1,1 +1,311 @@
-cmVxdWlyZSgnZG90ZW52JykuY29uZmlnKCk7CmNvbnN0IGV4cHJlc3MgPSByZXF1aXJlKCdleHByZXNzJyk7CmNvbnN0IG11bHRlciA9IHJlcXVpcmUoJ211bHRlcicpOwpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CmNvbnN0IHBhdGggPSByZXF1aXJlKCdwYXRoJyk7CmNvbnN0IEFudGhyb3BpYyA9IHJlcXVpcmUoJ0BhbnRocm9waWMtYWkvc2RrJyk7Cgpjb25zdCBhcHAgPSBleHByZXNzKCk7CmNvbnN0IFBPUlQgPSBwcm9jZXNzLmVudi5QT1JUIHx8IDgwOwoKY29uc3QgU09OSU9YX0FQSV9LRVkgPSBwcm9jZXNzLmVudi5TT05JT1hfQVBJX0tFWTsKY29uc3QgQU5USFJPUElDX0FQSV9LRVkgPSBwcm9jZXNzLmVudi5BTlRIUk9QSUNfQVBJX0tFWTsKY29uc3QgVEVMRUdSQU1fQk9UX1RPS0VOID0gcHJvY2Vzcy5lbnYuVEVMRUdSQU1fQk9UX1RPS0VOOwpjb25zdCBURUxFR1JBTV9DSEFUX0lEID0gcHJvY2Vzcy5lbnYuVEVMRUdSQU1fQ0hBVF9JRDsKY29uc3QgQVBQX1BBU1NXT1JEID0gcHJvY2Vzcy5lbnYuQVBQX1BBU1NXT1JEOwoKY29uc3QgU09OSU9YX0JBU0UgPSAnaHR0cHM6Ly9hcGkuc29uaW94LmNvbSc7CmNvbnN0IFNPTklPWF9NT0RFTCA9ICdzdHQtYXN5bmMtdjUnOwovLyBDYW50b25lc2UgaGFzIG5vIElTTyBjb2RlIGluIFNvbmlveCdzIHN1cHBvcnRlZCBsaXN0OyAnemgnIGNvdmVycyBDaGluZXNlLgpjb25zdCBMQU5HVUFHRV9ISU5UUyA9IFsnZW4nLCAnbXMnLCAnemgnXTsKCmNvbnN0IGFudGhyb3BpYyA9IG5ldyBBbnRocm9waWMoeyBhcGlLZXk6IEFOVEhST1BJQ19BUElfS0VZIH0pOwoKY29uc3QgVVBMT0FEX0RJUiA9IHBhdGguam9pbihfX2Rpcm5hbWUsICd1cGxvYWRzJyk7CmlmICghZnMuZXhpc3RzU3luYyhVUExPQURfRElSKSkgZnMubWtkaXJTeW5jKFVQTE9BRF9ESVIsIHsgcmVjdXJzaXZlOiB0cnVlIH0pOwoKYXBwLnVzZShleHByZXNzLmpzb24oeyBsaW1pdDogJzEwbWInIH0pKTsKCi8vIC0tLS0tLS0tLS0gU2ltcGxlIHNoYXJlZC1wYXNzd29yZCBnYXRlIChza2lwcGVkIGlmIEFQUF9QQVNTV09SRCB1bnNldCkgLS0tLS0tLS0tLQphcHAudXNlKChyZXEsIHJlcywgbmV4dCkgPT4gewogIGlmICghQVBQX1BBU1NXT1JEKSByZXR1cm4gbmV4dCgpOwogIGNvbnN0IGhkciA9IHJlcS5oZWFkZXJzLmF1dGhvcml6YXRpb24gfHwgJyc7CiAgaWYgKGhkci5zdGFydHNXaXRoKCdCYXNpYyAnKSkgewogICAgY29uc3QgZGVjb2RlZCA9IEJ1ZmZlci5mcm9tKGhkci5zbGljZSg2KSwgJ2Jhc2U2NCcpLnRvU3RyaW5nKCd1dGY4Jyk7CiAgICBjb25zdCBwYXNzID0gZGVjb2RlZC5zbGljZShkZWNvZGVkLmluZGV4T2YoJzonKSArIDEpOwogICAgaWYgKHBhc3MgPT09IEFQUF9QQVNTV09SRCkgcmV0dXJuIG5leHQoKTsKICB9CiAgcmVzLnNldCgnV1dXLUF1dGhlbnRpY2F0ZScsICdCYXNpYyByZWFsbT0iTWVldGluZyBOb3RlcyInKTsKICByZXR1cm4gcmVzLnN0YXR1cyg0MDEpLnNlbmQoJ0F1dGhlbnRpY2F0aW9uIHJlcXVpcmVkJyk7Cn0pOwoKY29uc3QgdXBsb2FkID0gbXVsdGVyKHsKICBkZXN0OiBVUExPQURfRElSLAogIGxpbWl0czogeyBmaWxlU2l6ZTogMzAwICogMTAyNCAqIDEwMjQgfSwgLy8gMzAwTUIgY2VpbGluZyBwZXIgZmlsZQp9KTsKCi8vIC0tLS0tLS0tLS0gRXhwbGljaXQgcGFnZSByb3V0ZSAoZGVjbGFyZWQgYmVmb3JlIGV4cHJlc3Muc3RhdGljKSAtLS0tLS0tLS0tCmFwcC5nZXQoJy8nLCAocmVxLCByZXMpID0+IHsKICByZXMuc2VuZEZpbGUocGF0aC5qb2luKF9fZGlybmFtZSwgJ3B1YmxpYycsICdpbmRleC5odG1sJykpOwp9KTsKCi8vIC0tLS0tLS0tLS0gU29uaW94IGhlbHBlcnMgLS0tLS0tLS0tLQphc3luYyBmdW5jdGlvbiBzb25pb3hGZXRjaChlbmRwb2ludCwgeyBtZXRob2QgPSAnR0VUJywgYm9keSwgaGVhZGVycyA9IHt9IH0gPSB7fSkgewogIGNvbnN0IHJlcyA9IGF3YWl0IGZldGNoKGAke1NPTklPWF9CQVNFfSR7ZW5kcG9pbnR9YCwgewogICAgbWV0aG9kLAogICAgaGVhZGVyczogeyBBdXRob3JpemF0aW9uOiBgQmVhcmVyICR7U09OSU9YX0FQSV9LRVl9YCwgLi4uaGVhZGVycyB9LAogICAgYm9keSwKICB9KTsKICBpZiAoIXJlcy5vaykgewogICAgdGhyb3cgbmV3IEVycm9yKGBTb25pb3ggJHttZXRob2R9ICR7ZW5kcG9pbnR9IGZhaWxlZCAoJHtyZXMuc3RhdHVzfSk6ICR7YXdhaXQgcmVzLnRleHQoKX1gKTsKICB9CiAgcmV0dXJuIG1ldGhvZCA9PT0gJ0RFTEVURScgPyBudWxsIDogcmVzLmpzb24oKTsKfQoKYXN5bmMgZnVuY3Rpb24gc29uaW94VXBsb2FkRmlsZShmaWxlUGF0aCwgZmlsZW5hbWUpIHsKICBjb25zdCBmb3JtID0gbmV3IEZvcm1EYXRhKCk7CiAgZm9ybS5hcHBlbmQoJ2ZpbGUnLCBuZXcgQmxvYihbZnMucmVhZEZpbGVTeW5jKGZpbGVQYXRoKV0pLCBmaWxlbmFtZSk7CiAgY29uc3QgcmVzID0gYXdhaXQgc29uaW94RmV0Y2goJy92MS9maWxlcycsIHsgbWV0aG9kOiAnUE9TVCcsIGJvZHk6IGZvcm0gfSk7CiAgcmV0dXJuIHJlcy5pZDsKfQoKYXN5bmMgZnVuY3Rpb24gc29uaW94Q3JlYXRlVHJhbnNjcmlwdGlvbihmaWxlSWQpIHsKICBjb25zdCByZXMgPSBhd2FpdCBzb25pb3hGZXRjaCgnL3YxL3RyYW5zY3JpcHRpb25zJywgewogICAgbWV0aG9kOiAnUE9TVCcsCiAgICBoZWFkZXJzOiB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSwKICAgIGJvZHk6IEpTT04uc3RyaW5naWZ5KHsKICAgICAgbW9kZWw6IFNPTklPWF9NT0RFTCwKICAgICAgZmlsZV9pZDogZmlsZUlkLAogICAgICBsYW5ndWFnZV9oaW50czogTEFOR1VBR0VfSElOVFMsCiAgICAgIGVuYWJsZV9sYW5ndWFnZV9pZGVudGlmaWNhdGlvbjogdHJ1ZSwKICAgICAgZW5hYmxlX3NwZWFrZXJfZGlhcml6YXRpb246IHRydWUsCiAgICB9KSwKICB9KTsKICByZXR1cm4gcmVzLmlkOwp9Cgphc3luYyBmdW5jdGlvbiBzb25pb3hXYWl0VW50aWxDb21wbGV0ZSh0cmFuc2NyaXB0aW9uSWQsIG1heFdhaXRNcyA9IDMwICogNjAgKiAxMDAwKSB7CiAgY29uc3Qgc3RhcnRlZCA9IERhdGUubm93KCk7CiAgd2hpbGUgKERhdGUubm93KCkgLSBzdGFydGVkIDwgbWF4V2FpdE1zKSB7CiAgICBjb25zdCBkYXRhID0gYXdhaXQgc29uaW94RmV0Y2goYC92MS90cmFuc2NyaXB0aW9ucy8ke3RyYW5zY3JpcHRpb25JZH1gKTsKICAgIGlmIChkYXRhLnN0YXR1cyA9PT0gJ2NvbXBsZXRlZCcpIHJldHVybjsKICAgIGlmIChkYXRhLnN0YXR1cyA9PT0gJ2Vycm9yJykgewogICAgICB0aHJvdyBuZXcgRXJyb3IoYFNvbmlveCB0cmFuc2NyaXB0aW9uIGVycm9yOiAke2RhdGEuZXJyb3JfbWVzc2FnZSB8fCAndW5rbm93bid9YCk7CiAgICB9CiAgICBhd2FpdCBuZXcgUHJvbWlzZSgocikgPT4gc2V0VGltZW91dChyLCA1MDAwKSk7CiAgfQogIHRocm93IG5ldyBFcnJvcignU29uaW94IHRyYW5zY3JpcHRpb24gdGltZWQgb3V0Jyk7Cn0KCi8vIFRoZSBSRVNUIC90cmFuc2NyaXB0IGVuZHBvaW50IHJldHVybnMgYHRva2Vuc2AsIG5vdCBhIGZsYXQgYHRleHRgIGZpZWxkLgpmdW5jdGlvbiByZW5kZXJUb2tlbnModG9rZW5zKSB7CiAgY29uc3QgcGFydHMgPSBbXTsKICBsZXQgY3VycmVudFNwZWFrZXIgPSBudWxsOwogIGxldCBjdXJyZW50TGFuZ3VhZ2UgPSBudWxsOwoKICBmb3IgKGNvbnN0IHRva2VuIG9mIHRva2VucyB8fCBbXSkgewogICAgbGV0IHRleHQgPSB0b2tlbi50ZXh0OwogICAgY29uc3QgeyBzcGVha2VyLCBsYW5ndWFnZSB9ID0gdG9rZW47CgogICAgaWYgKHNwZWFrZXIgIT09IHVuZGVmaW5lZCAmJiBzcGVha2VyICE9PSBudWxsICYmIHNwZWFrZXIgIT09IGN1cnJlbnRTcGVha2VyKSB7CiAgICAgIGlmIChjdXJyZW50U3BlYWtlciAhPT0gbnVsbCkgcGFydHMucHVzaCgnXG5cbicpOwogICAgICBjdXJyZW50U3BlYWtlciA9IHNwZWFrZXI7CiAgICAgIGN1cnJlbnRMYW5ndWFnZSA9IG51bGw7CiAgICAgIHBhcnRzLnB1c2goYFNwZWFrZXIgJHtjdXJyZW50U3BlYWtlcn06YCk7CiAgICB9CiAgICBpZiAobGFuZ3VhZ2UgIT09IHVuZGVmaW5lZCAmJiBsYW5ndWFnZSAhPT0gbnVsbCAmJiBsYW5ndWFnZSAhPT0gY3VycmVudExhbmd1YWdlKSB7CiAgICAgIGN1cnJlbnRMYW5ndWFnZSA9IGxhbmd1YWdlOwogICAgICBwYXJ0cy5wdXNoKGBcblskeyBjdXJyZW50TGFuZ3VhZ2UgfV0gYC5yZXBsYWNlKC9ccysvZywgKG0saSk9Pm0pKTsKICAgICAgdGV4dCA9ICh0ZXh0IHx8ICcnKS50cmltU3RhcnQoKTsKICAgIH0KICAgIHBhcnRzLnB1c2godGV4dCB8fCAnJyk7CiAgfQogIHJldHVybiBwYXJ0cy5qb2luKCcnKS50cmltKCk7Cn0KCmFzeW5jIGZ1bmN0aW9uIHNvbmlveEdldFRyYW5zY3JpcHQodHJhbnNjcmlwdGlvbklkKSB7CiAgY29uc3QgZGF0YSA9IGF3YWl0IHNvbmlveEZldGNoKGAvdjEvdHJhbnNjcmlwdGlvbnMvJHt0cmFuc2NyaXB0aW9uSWR9L3RyYW5zY3JpcHRgKTsKICAvLyBQcmVmZXIgcmVuZGVyZWQgdG9rZW5zIChrZWVwcyBzcGVha2VyICsgbGFuZ3VhZ2UgbGFiZWxzKTsgZmFsbCBiYWNrIHRvIGFueSBmbGF0IHRleHQuCiAgY29uc3QgcmVuZGVyZWQgPSByZW5kZXJUb2tlbnMoZGF0YS50b2tlbnMpOwogIHJldHVybiByZW5kZXJlZCB8fCBkYXRhLnRleHQgfHwgJyc7Cn0KCmFzeW5jIGZ1bmN0aW9uIHNvbmlveENsZWFudXAodHJhbnNjcmlwdGlvbklkLCBmaWxlSWQpIHsKICAvLyBCZXN0LWVmZm9ydDogZG9uJ3QgbGV0IGNsZWFudXAgZmFpbHVyZXMgbWFzayBhIHN1Y2Nlc3NmdWwgdHJhbnNjcmlwdGlvbi4KICBpZiAodHJhbnNjcmlwdGlvbklkKSB7CiAgICB0cnkgeyBhd2FpdCBzb25pb3hGZXRjaChgL3YxL3RyYW5zY3JpcHRpb25zLyR7dHJhbnNjcmlwdGlvbklkfWAsIHsgbWV0aG9kOiAnREVMRVRFJyB9KTsgfQogICAgY2F0Y2ggKGUpIHsgY29uc29sZS5lcnJvcignU29uaW94IHRyYW5zY3JpcHRpb24gY2xlYW51cCBmYWlsZWQ6JywgZS5tZXNzYWdlKTsgfQogIH0KICBpZiAoZmlsZUlkKSB7CiAgICB0cnkgeyBhd2FpdCBzb25pb3hGZXRjaChgL3YxL2ZpbGVzLyR7ZmlsZUlkfWAsIHsgbWV0aG9kOiAnREVMRVRFJyB9KTsgfQogICAgY2F0Y2ggKGUpIHsgY29uc29sZS5lcnJvcignU29uaW94IGZpbGUgY2xlYW51cCBmYWlsZWQ6JywgZS5tZXNzYWdlKTsgfQogIH0KfQoKLy8gLS0tLS0tLS0tLSBDbGF1ZGU6IGNsZWFuIHVwIHRyYW5zY3JpcHQgKyBhdHRhY2htZW50cyBpbnRvIG1hcmtkb3duIC0tLS0tLS0tLS0KYXN5bmMgZnVuY3Rpb24gY2xhdWRlU3RydWN0dXJlTm90ZXMocmF3VHJhbnNjcmlwdCwgYXR0YWNobWVudHMpIHsKICBjb25zdCB0b2RheSA9IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKS5zbGljZSgwLCAxMCk7CgogIGNvbnN0IGNvbnRlbnQgPSBbCiAgICB7CiAgICAgIHR5cGU6ICd0ZXh0JywKICAgICAgdGV4dDogYFlvdSBhcmUgY2xlYW5pbmcgdXAgYSByYXcgc3BlZWNoLXRvLXRleHQgdHJhbnNjcmlwdCBmcm9tIGEgTWFsYXlzaWFuIGJ1c2luZXNzIG1lZXRpbmcuIFRoZSBzcGVlY2ggbWl4ZXMgRW5nbGlzaCwgQmFoYXNhIE1lbGF5dSwgTWFuZGFyaW4gYW5kIENhbnRvbmVzZSwgc29tZXRpbWVzIHdpdGhpbiBhIHNpbmdsZSBzZW50ZW5jZS4gVGhlIHRyYW5zY3JpcHQgaXMgbWFjaGluZS1nZW5lcmF0ZWQgYW5kIHdpbGwgY29udGFpbiBlcnJvcnMsIGVzcGVjaWFsbHkgb24gcHJvcGVyIG5vdW5zLCBjb21wYW55IG5hbWVzLCBhbmQgY29kZS1zd2l0Y2hlZCBwaHJhc2VzLiBTcGVha2VyIGxhYmVscyBhbmQgW2xhbmd1YWdlXSB0YWdzIHdlcmUgYWRkZWQgYnkgdGhlIHRyYW5zY3JpcHRpb24gZW5naW5lIGFuZCBtYXkgdGhlbXNlbHZlcyBiZSB3cm9uZy4KCllvdXIgdGFzazoKMS4gQ29ycmVjdCBvYnZpb3VzIHRyYW5zY3JpcHRpb24gZXJyb3JzIHVzaW5nIGNvbnRleHQuIFdoZXJlIGEgdGVybSBpcyBnYXJibGVkIGFuZCB5b3UgY2Fubm90IGluZmVyIGl0IGNvbmZpZGVudGx5LCBtYXJrIGl0IFtVTkNMRUFSXSByYXRoZXIgdGhhbiBndWVzc2luZy4KMi4gUHJlc2VydmUgdGhlIG9yaWdpbmFsIGxhbmd1YWdlIG1peC4gRG8gbm90IHRyYW5zbGF0ZSBldmVyeXRoaW5nIGludG8gRW5nbGlzaDsga2VlcCBwaHJhc2VzIGluIHRoZSBsYW5ndWFnZSB0aGV5IHdlcmUgc2FpZCwgYWRkaW5nIGEgc2hvcnQgRW5nbGlzaCBnbG9zcyBpbiBicmFja2V0cyBvbmx5IHdoZXJlIGl0IGFpZHMgY29tcHJlaGVuc2lvbi4KMy4gT3V0cHV0IGEgbWFya2Rvd24gbWVldGluZyByZWNvcmQgdXNpbmcgZXhhY3RseSB0aGlzIHRlbXBsYXRlOgoKIyMjICR7dG9kYXl9IOKAlCA8TWVldGluZyB0eXBlPiAoPGF0dGVuZGVlcz4pCi0gQ29udGV4dDoKLSBXaGF0IHRoZXkgbmVlZDoKLSBTaWduYWxzOiBidWRnZXQgLyB0aW1lbGluZSAvIGRlY2lzaW9uLW1ha2VyCi0gT3VyIGFuZ2xlOiAocHJvZHVjdHMvc2VydmljZXMgdGhhdCBmaXQpCi0gQWdyZWVkIG5leHQgc3RlcDoKLSBQcm9wb3NhbCBkdWU6CgpSdWxlcyBmb3IgdGhlIHRlbXBsYXRlOiB1c2UgJHt0b2RheX0gYXMgdGhlIGRhdGUgdW5sZXNzIHRoZSB0cmFuc2NyaXB0IGNsZWFybHkgc3RhdGVzIGFub3RoZXIgZGF0ZS4gSWYgbWVldGluZyB0eXBlLCBhdHRlbmRlZXMsIG9yIGFueSBmaWVsZCBpcyBub3QgZXZpZGVudCBmcm9tIHRoZSBtYXRlcmlhbCwgd3JpdGUgW05PVCBTVEFURURdIOKAlCBuZXZlciBpbnZlbnQgbmFtZXMsIG51bWJlcnMsIG9yIGNvbW1pdG1lbnRzLiBJZiBhdHRhY2hlZCBpbWFnZXMgb3IgUERGcyBjb250YWluIHJlbGV2YW50IGNvbnRleHQgKHdoaXRlYm9hcmQgbm90ZXMsIGEgZGVjaywgYSBidXNpbmVzcyBjYXJkKSwgZm9sZCB0aGF0IGludG8gdGhlIGFwcHJvcHJpYXRlIGZpZWxkLgoKT3V0cHV0IG9ubHkgdGhlIG1hcmtkb3duIHJlY29yZCwgd2l0aCBubyBwcmVhbWJsZS4KClJhdyB0cmFuc2NyaXB0Ogoke3Jhd1RyYW5zY3JpcHR9YCwKICAgIH0sCiAgXTsKCiAgZm9yIChjb25zdCBhdHQgb2YgYXR0YWNobWVudHMpIHsKICAgIGlmIChhdHQubWltZXR5cGUgPT09ICdhcHBsaWNhdGlvbi9wZGYnKSB7CiAgICAgIGNvbnRlbnQucHVzaCh7CiAgICAgICAgdHlwZTogJ2RvY3VtZW50JywKICAgICAgICBzb3VyY2U6IHsgdHlwZTogJ2Jhc2U2NCcsIG1lZGlhX3R5cGU6ICdhcHBsaWNhdGlvbi9wZGYnLCBkYXRhOiBhdHQuYmFzZTY0IH0sCiAgICAgIH0pOwogICAgfSBlbHNlIGlmIChhdHQubWltZXR5cGUuc3RhcnRzV2l0aCgnaW1hZ2UvJykpIHsKICAgICAgY29udGVudC5wdXNoKHsKICAgICAgICB0eXBlOiAnaW1hZ2UnLAogICAgICAgIHNvdXJjZTogeyB0eXBlOiAnYmFzZTY0JywgbWVkaWFfdHlwZTogYXR0Lm1pbWV0eXBlLCBkYXRhOiBhdHQuYmFzZTY0IH0sCiAgICAgIH0pOwogICAgfQogIH0KCiAgY29uc3QgbXNnID0gYXdhaXQgYW50aHJvcGljLm1lc3NhZ2VzLmNyZWF0ZSh7CiAgICBtb2RlbDogJ2NsYXVkZS1zb25uZXQtNScsCiAgICBtYXhfdG9rZW5zOiAyMDAwLAogICAgbWVzc2FnZXM6IFt7IHJvbGU6ICd1c2VyJywgY29udGVudCB9XSwKICB9KTsKCiAgcmV0dXJuIG1zZy5jb250ZW50LmZpbHRlcigoYikgPT4gYi50eXBlID09PSAndGV4dCcpLm1hcCgoYikgPT4gYi50ZXh0KS5qb2luKCdcbicpOwp9CgovLyAtLS0tLS0tLS0tIFJvdXRlOiBwcm9jZXNzIHJlY29yZGluZyArIGF0dGFjaG1lbnRzIC0tLS0tLS0tLS0KYXBwLnBvc3QoCiAgJy9hcGkvcHJvY2VzcycsCiAgdXBsb2FkLmZpZWxkcyhbeyBuYW1lOiAnYXVkaW8nLCBtYXhDb3VudDogMSB9LCB7IG5hbWU6ICdhdHRhY2htZW50cycsIG1heENvdW50OiAxMCB9XSksCiAgYXN5bmMgKHJlcSwgcmVzKSA9PiB7CiAgICBjb25zdCB0ZW1wUGF0aHMgPSBbXTsKICAgIGxldCBzb25pb3hGaWxlSWQgPSBudWxsOwogICAgbGV0IHRyYW5zY3JpcHRpb25JZCA9IG51bGw7CgogICAgdHJ5IHsKICAgICAgaWYgKCFTT05JT1hfQVBJX0tFWSkgdGhyb3cgbmV3IEVycm9yKCdTT05JT1hfQVBJX0tFWSBpcyBub3QgY29uZmlndXJlZCBvbiB0aGUgc2VydmVyJyk7CiAgICAgIGlmICghQU5USFJPUElDX0FQSV9LRVkpIHRocm93IG5ldyBFcnJvcignQU5USFJPUElDX0FQSV9LRVkgaXMgbm90IGNvbmZpZ3VyZWQgb24gdGhlIHNlcnZlcicpOwoKICAgICAgY29uc3QgYXVkaW9GaWxlID0gcmVxLmZpbGVzICYmIHJlcS5maWxlcy5hdWRpbyAmJiByZXEuZmlsZXMuYXVkaW9bMF07CiAgICAgIGlmICghYXVkaW9GaWxlKSByZXR1cm4gcmVzLnN0YXR1cyg0MDApLmpzb24oeyBlcnJvcjogJ05vIGF1ZGlvIGZpbGUgcHJvdmlkZWQnIH0pOwoKICAgICAgdGVtcFBhdGhzLnB1c2goYXVkaW9GaWxlLnBhdGgpOwogICAgICBjb25zdCBhdHRhY2htZW50RmlsZXMgPSAocmVxLmZpbGVzICYmIHJlcS5maWxlcy5hdHRhY2htZW50cykgfHwgW107CiAgICAgIGF0dGFjaG1lbnRGaWxlcy5mb3JFYWNoKChmKSA9PiB0ZW1wUGF0aHMucHVzaChmLnBhdGgpKTsKCiAgICAgIHNvbmlveEZpbGVJZCA9IGF3YWl0IHNvbmlveFVwbG9hZEZpbGUoYXVkaW9GaWxlLnBhdGgsIGF1ZGlvRmlsZS5vcmlnaW5hbG5hbWUgfHwgJ3JlY29yZGluZycpOwogICAgICB0cmFuc2NyaXB0aW9uSWQgPSBhd2FpdCBzb25pb3hDcmVhdGVUcmFuc2NyaXB0aW9uKHNvbmlveEZpbGVJZCk7CiAgICAgIGF3YWl0IHNvbmlveFdhaXRVbnRpbENvbXBsZXRlKHRyYW5zY3JpcHRpb25JZCk7CiAgICAgIGNvbnN0IHJhd1RyYW5zY3JpcHQgPSBhd2FpdCBzb25pb3hHZXRUcmFuc2NyaXB0KHRyYW5zY3JpcHRpb25JZCk7CgogICAgICBpZiAoIXJhd1RyYW5zY3JpcHQudHJpbSgpKSB7CiAgICAgICAgdGhyb3cgbmV3IEVycm9yKCdUcmFuc2NyaXB0aW9uIHJldHVybmVkIG5vIHNwZWVjaCDigJQgY2hlY2sgdGhlIHJlY29yZGluZyBhY3R1YWxseSBoYXMgYXVkaW8nKTsKICAgICAgfQoKICAgICAgY29uc3QgYXR0YWNobWVudHMgPSBhdHRhY2htZW50RmlsZXMubWFwKChmKSA9PiAoewogICAgICAgIG1pbWV0eXBlOiBmLm1pbWV0eXBlLAogICAgICAgIGJhc2U2NDogZnMucmVhZEZpbGVTeW5jKGYucGF0aCkudG9TdHJpbmcoJ2Jhc2U2NCcpLAogICAgICB9KSk7CgogICAgICBjb25zdCBtYXJrZG93biA9IGF3YWl0IGNsYXVkZVN0cnVjdHVyZU5vdGVzKHJhd1RyYW5zY3JpcHQsIGF0dGFjaG1lbnRzKTsKCiAgICAgIHJlcy5qc29uKHsgcmF3VHJhbnNjcmlwdCwgbWFya2Rvd24gfSk7CiAgICB9IGNhdGNoIChlcnIpIHsKICAgICAgY29uc29sZS5lcnJvcihlcnIpOwogICAgICByZXMuc3RhdHVzKDUwMCkuanNvbih7IGVycm9yOiBlcnIubWVzc2FnZSB9KTsKICAgIH0gZmluYWxseSB7CiAgICAgIC8vIEFsd2F5cyBjbGVhbiB1cCBsb2NhbCB0ZW1wIGZpbGVzIGFuZCByZW1vdGUgU29uaW94IGFydGlmYWN0cy4KICAgICAgZm9yIChjb25zdCBwIG9mIHRlbXBQYXRocykgewogICAgICAgIHRyeSB7IGlmIChmcy5leGlzdHNTeW5jKHApKSBmcy51bmxpbmtTeW5jKHApOyB9CiAgICAgICAgY2F0Y2ggKGUpIHsgY29uc29sZS5lcnJvcignVGVtcCBmaWxlIGNsZWFudXAgZmFpbGVkOicsIGUubWVzc2FnZSk7IH0KICAgICAgfQogICAgICBzb25pb3hDbGVhbnVwKHRyYW5zY3JpcHRpb25JZCwgc29uaW94RmlsZUlkKTsKICAgIH0KICB9Cik7CgovLyAtLS0tLS0tLS0tIFJvdXRlOiBzZW5kIGZpbmFsaXplZCBtYXJrZG93biB0byBUZWxlZ3JhbSAtLS0tLS0tLS0tCi8vIFNlbnQgYXMgYSBkb2N1bWVudDogc2lkZXN0ZXBzIHRoZSA0MDk2LWNoYXIgbWVzc2FnZSBjYXAgYW5kIE1hcmtkb3duIHBhcnNlIGVycm9ycwovLyB0aGF0ICcjIyMnIGhlYWRlcnMgYW5kIHN0cmF5ICdfJyAvICcqJyBjaGFyYWN0ZXJzIHJlbGlhYmx5IHRyaWdnZXIuCmFwcC5wb3N0KCcvYXBpL3NlbmQtdGVsZWdyYW0nLCBhc3luYyAocmVxLCByZXMpID0+IHsKICB0cnkgewogICAgY29uc3QgeyBtYXJrZG93biB9ID0gcmVxLmJvZHk7CiAgICBpZiAoIW1hcmtkb3duIHx8ICFtYXJrZG93bi50cmltKCkpIHsKICAgICAgcmV0dXJuIHJlcy5zdGF0dXMoNDAwKS5qc29uKHsgZXJyb3I6ICdObyBtYXJrZG93biBwcm92aWRlZCcgfSk7CiAgICB9CiAgICBpZiAoIVRFTEVHUkFNX0JPVF9UT0tFTiB8fCAhVEVMRUdSQU1fQ0hBVF9JRCkgewogICAgICByZXR1cm4gcmVzLnN0YXR1cyg1MDApLmpzb24oewogICAgICAgIGVycm9yOiAnVGVsZWdyYW0gbm90IGNvbmZpZ3VyZWQgeWV0IOKAlCBzZXQgVEVMRUdSQU1fQk9UX1RPS0VOIGFuZCBURUxFR1JBTV9DSEFUX0lEIGluIC5lbnYnLAogICAgICB9KTsKICAgIH0KCiAgICBjb25zdCBmaWxlbmFtZSA9IGBtZWV0aW5nLW5vdGVzLSR7bmV3IERhdGUoKS50b0lTT1N0cmluZygpLnNsaWNlKDAsIDEwKX0ubWRgOwogICAgY29uc3QgZm9ybSA9IG5ldyBGb3JtRGF0YSgpOwogICAgZm9ybS5hcHBlbmQoJ2NoYXRfaWQnLCBURUxFR1JBTV9DSEFUX0lEKTsKICAgIGZvcm0uYXBwZW5kKCdjYXB0aW9uJywgJ05ldyBtZWV0aW5nIHJlY29yZCAocmV2aWV3ZWQpJyk7CiAgICBmb3JtLmFwcGVuZCgnZG9jdW1lbnQnLCBuZXcgQmxvYihbbWFya2Rvd25dLCB7IHR5cGU6ICd0ZXh0L21hcmtkb3duJyB9KSwgZmlsZW5hbWUpOwoKICAgIGNvbnN0IHRnUmVzID0gYXdhaXQgZmV0Y2goYGh0dHBzOi8vYXBpLnRlbGVncmFtLm9yZy9ib3Qke1RFTEVHUkFNX0JPVF9UT0tFTn0vc2VuZERvY3VtZW50YCwgewogICAgICBtZXRob2Q6ICdQT1NUJywKICAgICAgYm9keTogZm9ybSwKICAgIH0pOwogICAgaWYgKCF0Z1Jlcy5vaykgewogICAgICB0aHJvdyBuZXcgRXJyb3IoYFRlbGVncmFtIHNlbmQgZmFpbGVkICgke3RnUmVzLnN0YXR1c30pOiAke2F3YWl0IHRnUmVzLnRleHQoKX1gKTsKICAgIH0KCiAgICByZXMuanNvbih7IHN1Y2Nlc3M6IHRydWUgfSk7CiAgfSBjYXRjaCAoZXJyKSB7CiAgICBjb25zb2xlLmVycm9yKGVycik7CiAgICByZXMuc3RhdHVzKDUwMCkuanNvbih7IGVycm9yOiBlcnIubWVzc2FnZSB9KTsKICB9Cn0pOwoKLy8gLS0tLS0tLS0tLSBIZWFsdGggY2hlY2sgLS0tLS0tLS0tLQphcHAuZ2V0KCcvaGVhbHRoeicsIChyZXEsIHJlcykgPT4gewogIHJlcy5qc29uKHsKICAgIG9rOiB0cnVlLAogICAgc29uaW94OiAhIVNPTklPWF9BUElfS0VZLAogICAgYW50aHJvcGljOiAhIUFOVEhST1BJQ19BUElfS0VZLAogICAgdGVsZWdyYW06ICEhKFRFTEVHUkFNX0JPVF9UT0tFTiAmJiBURUxFR1JBTV9DSEFUX0lEKSwKICB9KTsKfSk7CgovLyBNdWx0ZXIgLyBnZW5lcmljIGVycm9yIGhhbmRsZXIgKGUuZy4gZmlsZSB0b28gbGFyZ2UpCmFwcC51c2UoKGVyciwgcmVxLCByZXMsIG5leHQpID0+IHsKICBjb25zb2xlLmVycm9yKGVycik7CiAgY29uc3QgbXNnID0gZXJyLmNvZGUgPT09ICdMSU1JVF9GSUxFX1NJWkUnID8gJ0ZpbGUgdG9vIGxhcmdlIChtYXggMzAwTUIpJyA6IGVyci5tZXNzYWdlOwogIHJlcy5zdGF0dXMoNDAwKS5qc29uKHsgZXJyb3I6IG1zZyB9KTsKfSk7CgovLyBTdGF0aWMgYXNzZXRzIEFGVEVSIGV4cGxpY2l0IHJvdXRlcwphcHAudXNlKGV4cHJlc3Muc3RhdGljKHBhdGguam9pbihfX2Rpcm5hbWUsICdwdWJsaWMnKSkpOwoKY29uc3Qgc2VydmVyID0gYXBwLmxpc3RlbihQT1JULCAoKSA9PgogIGNvbnNvbGUubG9nKGBNZWV0aW5nIG5vdGVzIGFwcCBsaXN0ZW5pbmcgb24gcG9ydCAke1BPUlR9YCkKKTsKLy8gVHJhbnNjcmliaW5nIGEgbG9uZyBtZWV0aW5nIGNhbiBleGNlZWQgTm9kZSdzIDUtbWludXRlIGRlZmF1bHQgcmVxdWVzdCB0aW1lb3V0LgpzZXJ2ZXIucmVxdWVzdFRpbWVvdXQgPSA0NSAqIDYwICogMTAwMDsKc2VydmVyLmhlYWRlcnNUaW1lb3V0ID0gNDYgKiA2MCAqIDEwMDA7Cg==
+require('dotenv').config();
+const express = require('express');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const Anthropic = require('@anthropic-ai/sdk');
+
+const app = express();
+const PORT = process.env.PORT || 80;
+
+const SONIOX_API_KEY = process.env.SONIOX_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const APP_PASSWORD = process.env.APP_PASSWORD;
+
+const SONIOX_BASE = 'https://api.soniox.com';
+const SONIOX_MODEL = 'stt-async-v5';
+// Cantonese has no ISO code in Soniox's supported list; 'zh' covers Chinese.
+const LANGUAGE_HINTS = ['en', 'ms', 'zh'];
+
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+app.use(express.json({ limit: '10mb' }));
+
+// ---------- Simple shared-password gate (skipped if APP_PASSWORD unset) ----------
+app.use((req, res, next) => {
+  if (!APP_PASSWORD) return next();
+  const hdr = req.headers.authorization || '';
+  if (hdr.startsWith('Basic ')) {
+    const decoded = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
+    const pass = decoded.slice(decoded.indexOf(':') + 1);
+    if (pass === APP_PASSWORD) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Meeting Notes"');
+  return res.status(401).send('Authentication required');
+});
+
+const upload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 300 * 1024 * 1024 }, // 300MB ceiling per file
+});
+
+// ---------- Explicit page route (declared before express.static) ----------
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ---------- Soniox helpers ----------
+async function sonioxFetch(endpoint, { method = 'GET', body, headers = {} } = {}) {
+  const res = await fetch(`${SONIOX_BASE}${endpoint}`, {
+    method,
+    headers: { Authorization: `Bearer ${SONIOX_API_KEY}`, ...headers },
+    body,
+  });
+  if (!res.ok) {
+    throw new Error(`Soniox ${method} ${endpoint} failed (${res.status}): ${await res.text()}`);
+  }
+  return method === 'DELETE' ? null : res.json();
+}
+
+async function sonioxUploadFile(filePath, filename) {
+  const form = new FormData();
+  form.append('file', new Blob([fs.readFileSync(filePath)]), filename);
+  const res = await sonioxFetch('/v1/files', { method: 'POST', body: form });
+  return res.id;
+}
+
+async function sonioxCreateTranscription(fileId) {
+  const res = await sonioxFetch('/v1/transcriptions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: SONIOX_MODEL,
+      file_id: fileId,
+      language_hints: LANGUAGE_HINTS,
+      enable_language_identification: true,
+      enable_speaker_diarization: true,
+    }),
+  });
+  return res.id;
+}
+
+async function sonioxWaitUntilComplete(transcriptionId, maxWaitMs = 30 * 60 * 1000) {
+  const started = Date.now();
+  while (Date.now() - started < maxWaitMs) {
+    const data = await sonioxFetch(`/v1/transcriptions/${transcriptionId}`);
+    if (data.status === 'completed') return;
+    if (data.status === 'error') {
+      throw new Error(`Soniox transcription error: ${data.error_message || 'unknown'}`);
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  throw new Error('Soniox transcription timed out');
+}
+
+// The REST /transcript endpoint returns `tokens`, not a flat `text` field.
+function renderTokens(tokens) {
+  const parts = [];
+  let currentSpeaker = null;
+  let currentLanguage = null;
+
+  for (const token of tokens || []) {
+    let text = token.text;
+    const { speaker, language } = token;
+
+    if (speaker !== undefined && speaker !== null && speaker !== currentSpeaker) {
+      if (currentSpeaker !== null) parts.push('\n\n');
+      currentSpeaker = speaker;
+      currentLanguage = null;
+      parts.push(`Speaker ${currentSpeaker}:`);
+    }
+    if (language !== undefined && language !== null && language !== currentLanguage) {
+      currentLanguage = language;
+      parts.push(`\n[${currentLanguage}] `);
+      text = (text || '').trimStart();
+    }
+    parts.push(text || '');
+  }
+  return parts.join('').trim();
+}
+
+async function sonioxGetTranscript(transcriptionId) {
+  const data = await sonioxFetch(`/v1/transcriptions/${transcriptionId}/transcript`);
+  // Prefer rendered tokens (keeps speaker + language labels); fall back to any flat text.
+  const rendered = renderTokens(data.tokens);
+  return rendered || data.text || '';
+}
+
+async function sonioxCleanup(transcriptionId, fileId) {
+  // Best-effort: don't let cleanup failures mask a successful transcription.
+  if (transcriptionId) {
+    try { await sonioxFetch(`/v1/transcriptions/${transcriptionId}`, { method: 'DELETE' }); }
+    catch (e) { console.error('Soniox transcription cleanup failed:', e.message); }
+  }
+  if (fileId) {
+    try { await sonioxFetch(`/v1/files/${fileId}`, { method: 'DELETE' }); }
+    catch (e) { console.error('Soniox file cleanup failed:', e.message); }
+  }
+}
+
+// ---------- Claude: clean up transcript + attachments into markdown ----------
+async function claudeStructureNotes(rawTranscript, attachments) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const content = [
+    {
+      type: 'text',
+      text: `You are cleaning up a raw speech-to-text transcript from a Malaysian business meeting. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese, sometimes within a single sentence. The transcript is machine-generated and will contain errors, especially on proper nouns, company names, and code-switched phrases. Speaker labels and [language] tags were added by the transcription engine and may themselves be wrong.
+
+Your task:
+1. Correct obvious transcription errors using context. Where a term is garbled and you cannot infer it confidently, mark it [UNCLEAR] rather than guessing.
+2. Preserve the original language mix. Do not translate everything into English; keep phrases in the language they were said, adding a short English gloss in brackets only where it aids comprehension.
+3. Output a markdown meeting record using exactly this template:
+
+### ${today} — <Meeting type> (<attendees>)
+- Context:
+- What they need:
+- Signals: budget / timeline / decision-maker
+- Our angle: (products/services that fit)
+- Agreed next step:
+- Proposal due:
+
+Rules for the template: use ${today} as the date unless the transcript clearly states another date. If meeting type, attendees, or any field is not evident from the material, write [NOT STATED] — never invent names, numbers, or commitments. If attached images or PDFs contain relevant context (whiteboard notes, a deck, a business card), fold that into the appropriate field.
+
+Output only the markdown record, with no preamble.
+
+Raw transcript:
+${rawTranscript}`,
+    },
+  ];
+
+  for (const att of attachments) {
+    if (att.mimetype === 'application/pdf') {
+      content.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: att.base64 },
+      });
+    } else if (att.mimetype.startsWith('image/')) {
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: att.mimetype, data: att.base64 },
+      });
+    }
+  }
+
+  const msg = await anthropic.messages.create({
+    model: 'claude-sonnet-5',
+    max_tokens: 2000,
+    messages: [{ role: 'user', content }],
+  });
+
+  return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+}
+
+// ---------- Route: process recording + attachments ----------
+app.post(
+  '/api/process',
+  upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'attachments', maxCount: 10 }]),
+  async (req, res) => {
+    const tempPaths = [];
+    let sonioxFileId = null;
+    let transcriptionId = null;
+
+    try {
+      if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
+      if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
+
+      const audioFile = req.files && req.files.audio && req.files.audio[0];
+      if (!audioFile) return res.status(400).json({ error: 'No audio file provided' });
+
+      tempPaths.push(audioFile.path);
+      const attachmentFiles = (req.files && req.files.attachments) || [];
+      attachmentFiles.forEach((f) => tempPaths.push(f.path));
+
+      sonioxFileId = await sonioxUploadFile(audioFile.path, audioFile.originalname || 'recording');
+      transcriptionId = await sonioxCreateTranscription(sonioxFileId);
+      await sonioxWaitUntilComplete(transcriptionId);
+      const rawTranscript = await sonioxGetTranscript(transcriptionId);
+
+      if (!rawTranscript.trim()) {
+        throw new Error('Transcription returned no speech — check the recording actually has audio');
+      }
+
+      const attachments = attachmentFiles.map((f) => ({
+        mimetype: f.mimetype,
+        base64: fs.readFileSync(f.path).toString('base64'),
+      }));
+
+      const markdown = await claudeStructureNotes(rawTranscript, attachments);
+
+      res.json({ rawTranscript, markdown });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    } finally {
+      // Always clean up local temp files and remote Soniox artifacts.
+      for (const p of tempPaths) {
+        try { if (fs.existsSync(p)) fs.unlinkSync(p); }
+        catch (e) { console.error('Temp file cleanup failed:', e.message); }
+      }
+      sonioxCleanup(transcriptionId, sonioxFileId);
+    }
+  }
+);
+
+// ---------- Route: send finalized markdown to Telegram ----------
+// Sent as a document: sidesteps the 4096-char message cap and Markdown parse errors
+// that '###' headers and stray '_' / '*' characters reliably trigger.
+app.post('/api/send-telegram', async (req, res) => {
+  try {
+    const { markdown } = req.body;
+    if (!markdown || !markdown.trim()) {
+      return res.status(400).json({ error: 'No markdown provided' });
+    }
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      return res.status(500).json({
+        error: 'Telegram not configured yet — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env',
+      });
+    }
+
+    const filename = `meeting-notes-${new Date().toISOString().slice(0, 10)}.md`;
+    const form = new FormData();
+    form.append('chat_id', TELEGRAM_CHAT_ID);
+    form.append('caption', 'New meeting record (reviewed)');
+    form.append('document', new Blob([markdown], { type: 'text/markdown' }), filename);
+
+    const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!tgRes.ok) {
+      throw new Error(`Telegram send failed (${tgRes.status}): ${await tgRes.text()}`);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Health check ----------
+app.get('/healthz', (req, res) => {
+  res.json({
+    ok: true,
+    soniox: !!SONIOX_API_KEY,
+    anthropic: !!ANTHROPIC_API_KEY,
+    telegram: !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID),
+  });
+});
+
+// Multer / generic error handler (e.g. file too large)
+app.use((err, req, res, next) => {
+  console.error(err);
+  const msg = err.code === 'LIMIT_FILE_SIZE' ? 'File too large (max 300MB)' : err.message;
+  res.status(400).json({ error: msg });
+});
+
+// Static assets AFTER explicit routes
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = app.listen(PORT, () =>
+  console.log(`Meeting notes app listening on port ${PORT}`)
+);
+// Transcribing a long meeting can exceed Node's 5-minute default request timeout.
+server.requestTimeout = 45 * 60 * 1000;
+server.headersTimeout = 46 * 60 * 1000;
