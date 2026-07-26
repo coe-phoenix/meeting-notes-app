@@ -4,9 +4,21 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Meeting Notes</title>
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0f1115" />
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<!-- iOS standalone mode: no Safari chrome once added to the home screen -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Meeting Notes" />
 <style>
   :root { color-scheme: dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; background:#0f1115; color:#e8e8ea; max-width:640px; margin:0 auto; padding:24px 16px 80px; }
+  body { font-family: -apple-system, system-ui, sans-serif; background:#0f1115; color:#e8e8ea; max-width:640px; margin:0 auto;
+         padding:calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(80px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
   h1 { font-size:1.4rem; margin-bottom:4px; }
   p.sub { color:#9a9aa2; margin-top:0; font-size:0.9rem; }
   .card { background:#1a1d24; border:1px solid #2a2e37; border-radius:12px; padding:16px; margin-bottom:16px; }
@@ -17,7 +29,8 @@
   .btn-row { display:flex; gap:10px; margin-top:10px; }
   .btn-row button { flex:1; }
   input[type=file] { width:100%; color:#c8c8cc; margin-top:8px; }
-  textarea { width:100%; min-height:280px; background:#0f1115; color:#e8e8ea; border:1px solid #2a2e37; border-radius:8px; padding:12px; font-family: ui-monospace, monospace; font-size:0.9rem; box-sizing:border-box; }
+  /* font-size must stay >=16px or iOS Safari zooms the page on focus */
+  textarea { width:100%; min-height:280px; background:#0f1115; color:#e8e8ea; border:1px solid #2a2e37; border-radius:8px; padding:12px; font-family: ui-monospace, monospace; font-size:16px; line-height:1.45; box-sizing:border-box; }
   .status { font-size:0.85rem; color:#9a9aa2; margin-top:8px; min-height:1.2em; }
   .rec-dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#e25555; margin-right:6px; animation: pulse 1s infinite; }
   @keyframes pulse { 50% { opacity:0.3; } }
@@ -81,7 +94,29 @@ function refreshProcessBtn() {
   processBtn.disabled = !(recordedBlob || uploadedAudioFile);
 }
 
+// Service worker: only registers over HTTPS (or localhost). Required for the
+// "install to home screen" prompt on Android/Chrome.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('SW registration failed:', e.message));
+  });
+}
+
+// The microphone API only exists in a secure context. Over plain HTTP on an IP
+// address, navigator.mediaDevices is undefined — so check up front and tell the
+// user to use the upload path rather than throwing a TypeError on click.
+const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+if (!canRecord) {
+  recordBtn.disabled = true;
+  recordBtn.style.opacity = '0.5';
+  recordBtn.style.cursor = 'not-allowed';
+  recStatus.textContent = window.isSecureContext
+    ? 'This browser does not expose microphone recording. Upload a voice memo below instead.'
+    : 'In-browser recording needs HTTPS. Upload a voice memo below instead.';
+}
+
 recordBtn.onclick = async () => {
+  if (!canRecord) return;
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   recordedChunks = [];
   mediaRecorder = new MediaRecorder(stream);
