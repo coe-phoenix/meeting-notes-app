@@ -132,6 +132,8 @@ recordBtn.onclick = async () => {
     audioUpload.value = '';
     refreshProcessBtn();
     recStatus.textContent = `Recording captured (${ext}).`;
+    // Auto-run transcription as soon as the recording is ready.
+    if (recordedBlob) processBtn.click();
   };
   mediaRecorder.start();
   recordBtn.classList.add('hidden');
