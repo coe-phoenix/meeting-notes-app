@@ -1,1 +1,45 @@
-IyBNZWV0aW5nIE5vdGVzIEFwcAoKUmVjb3JkIG9yIHVwbG9hZCBtZWV0aW5nIGF1ZGlvIChNYWxheXNpYW4gbXVsdGlsaW5ndWFsOiBFbmdsaXNoIC8gQk0gLyBNYW5kYXJpbiAvIENhbnRvbmVzZSwKZnJlZWx5IG1peGVkKSDihpIgU29uaW94IHRyYW5zY3JpYmVzIOKGkiBDbGF1ZGUgc3RydWN0dXJlcyBpdCBpbnRvIGEgbWFya2Rvd24gbWVldGluZyByZWNvcmQg4oaSCnlvdSByZXZpZXcvZWRpdCDihpIgc2VuZCB0byBIZXJtZXMgdmlhIFRlbGVncmFtLgoKIyMgU2V0dXAKCmBgYGJhc2gKbnBtIGluc3RhbGwKY3AgLmVudi5leGFtcGxlIC5lbnYKIyBmaWxsIGluIFNPTklPWF9BUElfS0VZLCBBTlRIUk9QSUNfQVBJX0tFWSwgVEVMRUdSQU1fQk9UX1RPS0VOLCBURUxFR1JBTV9DSEFUX0lECm5wbSBzdGFydApgYGAKCiMjIEZsb3cKCjEuIFJlY29yZCBpbi1icm93c2VyIG9yIHVwbG9hZCBhIHZvaWNlIG1lbW8gZmlsZSAoaVBob25lIFZvaWNlIE1lbW9zIHdvcmtzIGZpbmUgdmlhIHRoZSBmaWxlIHBpY2tlcikKMi4gT3B0aW9uYWxseSBhdHRhY2ggcGhvdG9zL1BERnMgKHdoaXRlYm9hcmQgc2hvdHMsIGRlY2tzLCBidXNpbmVzcyBjYXJkcykgZm9yIGV4dHJhIGNvbnRleHQKMy4gQ2xpY2sgIlRyYW5zY3JpYmUgJiBTdHJ1Y3R1cmUiIOKAlCBhdWRpbyBnb2VzIHRvIFNvbmlveCwgdHJhbnNjcmlwdCArIGF0dGFjaG1lbnRzIGdvIHRvIENsYXVkZSwKICAgd2hpY2ggcmV0dXJucyBhIG1hcmtkb3duIG1lZXRpbmcgcmVjb3JkCjQuIEVkaXQgdGhlIHJlc3VsdCBkaXJlY3RseSBpbiB0aGUgYnJvd3NlciAoZml4ZXMgbmFtZXMsIGNvcnJlY3RzIGFueSBtaXMtaGVhcmQgdGVybXMpCjUuICJTZW5kIHRvIFRlbGVncmFtIiBwb3N0cyB0aGUgZmluYWwgbWFya2Rvd24gdG8gdGhlIEhlcm1lcyBib3QgY2hhdDsgIkRvd25sb2FkIC5tZCIgc2F2ZXMgaXQgbG9jYWxseQoKIyMgTm90ZXMKCi0gYC5lbnZgIGlzIGdpdC1pZ25vcmVkIOKAlCBuZXZlciBjb21taXQgcmVhbCBBUEkga2V5cwotIGBURUxFR1JBTV9CT1RfVE9LRU5gIC8gYFRFTEVHUkFNX0NIQVRfSURgIHJldXNlIEhlcm1lcycgZXhpc3RpbmcgYm90IHBlciB5b3VyIHNldHVwIOKAlCB1cGRhdGUKICB0aGUgdG9rZW4gaW4gYC5lbnZgIG9uY2UgeW91IGhhdmUgaXQKLSBTb25pb3ggbW9kZWwgdXNlZDogYHN0dC1hc3luYy1wcmV2aWV3YCAoYXN5bmMgZmlsZSB0cmFuc2NyaXB0aW9uLCBhdXRvIGxhbmd1YWdlLW1peGluZykKLSBDbGF1ZGUgbW9kZWwgdXNlZDogYGNsYXVkZS1zb25uZXQtNWAK
+# Meeting Notes App
+
+Record or upload meeting audio (Malaysian multilingual: English / BM / Mandarin, freely mixed)
+→ Soniox transcribes → Claude cleans up and structures it into a markdown meeting record →
+you review/edit → send to Hermes via Telegram.
+
+## Setup
+
+```bash
+npm install
+cp .env.example .env
+# fill in APP_PASSWORD, SONIOX_API_KEY, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+npm start
+```
+
+## Flow
+
+1. Record in-browser, or upload a voice memo (iPhone Voice Memos works via the file picker)
+2. Optionally attach photos/PDFs (whiteboard shots, decks, business cards) for extra context
+3. "Transcribe & Structure" — audio → Soniox; transcript + attachments → Claude
+4. Review the raw transcript and edit the structured record (fix names, correct mis-heard terms)
+5. "Send to Telegram" posts the final markdown as a `.md` document to the Hermes bot chat
+
+## Notes
+
+- `.env` is git-ignored — never commit real API keys
+- **`APP_PASSWORD` is important**: if unset, anyone with the server IP can use the app,
+  burn API credits, and post into your Telegram channel
+- Soniox model: `stt-async-v5` (async file transcription, auto language-mixing,
+  speaker diarization and language identification enabled)
+- Claude model: `claude-sonnet-5`
+- Soniox files/transcriptions are deleted after each run so they don't accumulate
+
+## Known limitation
+
+Soniox's supported-language list covers Malay (`ms`), English (`en`) and Chinese (`zh`),
+but has **no separate Cantonese code**. Cantonese-heavy audio is therefore unproven —
+test a real Cantonese clip before relying on it.
+
+## Endpoints
+
+- `GET /` — the UI
+- `GET /healthz` — reports which credentials are configured
+- `POST /api/process` — multipart: `audio` (1 file), `attachments` (up to 10)
+- `POST /api/send-telegram` — JSON `{ markdown }`
