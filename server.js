@@ -4,6 +4,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
+const icons = require('./icons');
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -25,6 +26,38 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 app.use(express.json({ limit: '10mb' }));
+
+// ---------- PWA assets: served before the auth gate ----------
+// Icons and the manifest must be fetchable without credentials, otherwise the
+// install prompt and home-screen icon silently fail behind Basic auth. These
+// contain no private data.
+const ICON_ROUTES = {
+  '/icon-192.png': icons.icon_192,
+  '/icon-512.png': icons.icon_512,
+  '/icon-maskable-512.png': icons.icon_maskable_512,
+  '/apple-touch-icon.png': icons.apple_touch,
+  '/apple-touch-icon-precomposed.png': icons.apple_touch,
+  '/favicon.ico': icons.apple_touch,
+};
+
+app.get(Object.keys(ICON_ROUTES), (req, res) => {
+  res.type('image/png');
+  res.set('Cache-Control', 'public, max-age=604800');
+  res.send(ICON_ROUTES[req.path]);
+});
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json');
+  res.sendFile(path.join(__dirname, 'public', 'manifest.webmanifest'));
+});
+
+// Service worker script fetches don't reliably carry Basic-auth credentials, so
+// serve it before the gate too. It contains no secrets.
+app.get('/sw.js', (req, res) => {
+  res.type('application/javascript');
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'public', 'sw.js'));
+});
 
 // ---------- Simple shared-password gate (skipped if APP_PASSWORD unset) ----------
 app.use((req, res, next) => {
