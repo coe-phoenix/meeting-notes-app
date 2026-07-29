@@ -37,9 +37,32 @@ Soniox's supported-language list covers Malay (`ms`), English (`en`) and Chinese
 but has **no separate Cantonese code**. Cantonese-heavy audio is therefore unproven —
 test a real Cantonese clip before relying on it.
 
+## Crash-proof recording (Phase 1)
+
+- Live recording streams to `MediaRecorder` with a 30s timeslice; every chunk is
+  written to **IndexedDB** the instant it arrives, so a crash/lock/force-quit loses
+  at most ~30s of audio.
+- A segment's chunks are deleted only after that segment is safely transcribed
+  server-side; the whole session is deleted only after a successful finalize.
+- On next launch, leftover chunks surface a **"Recover recording"** card
+  (reassembles + re-transcribes) with a **"Clear recovered data"** option.
+- While recording: **Screen Wake Lock** (re-acquired on tab return), a live
+  **elapsed timer + audio-level meter**, and a **beforeunload** warning.
+
 ## Endpoints
 
 - `GET /` — the UI
 - `GET /healthz` — reports which credentials are configured
+- `GET /api/config` — client runtime config (segment length)
 - `POST /api/process` — multipart: `audio` (1 file), `attachments` (up to 10)
+- `POST /api/session/start` — mint a live-recording session id
+- `POST /api/session/resume` — JSON `{ sessionId }`; recreate a session dir during crash recovery
+- `POST /api/transcribe-chunk` — multipart: `audio` segment + `sessionId` + `index`
+- `POST /api/finalize` — multipart: `sessionId` + `attachments`; stitches + structures
 - `POST /api/send-telegram` — JSON `{ markdown }`
+
+## Tests
+
+- `node test-phase1.mjs` — Playwright (fake mic, stubbed APIs) covering the recording
+  heartbeat/meter, IndexedDB persistence, and the crash → recover/discard flows.
+  Requires the server running on `:3000`: `PORT=3000 node server.js`.

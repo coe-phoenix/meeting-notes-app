@@ -324,6 +324,24 @@ app.post('/api/session/start', (req, res) => {
   }
 });
 
+// Resume a crashed session during client-side recovery. The client persists its
+// audio chunks in IndexedDB along with the original sessionId; if the process
+// restarted (or the transcript dir was otherwise lost) the dir may be gone, so
+// recreate it. Any segment transcripts that DID survive on disk are preserved
+// and stitched together with the re-transcribed leftovers on finalize.
+app.post('/api/session/resume', (req, res) => {
+  try {
+    const { sessionId } = req.body || {};
+    const dir = sessionDir(sessionId); // throws on a malformed id
+    const existed = fs.existsSync(dir);
+    if (!existed) fs.mkdirSync(dir, { recursive: true });
+    res.json({ sessionId, existed });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Transcribe a single segment and append its raw text to the session store.
 app.post('/api/transcribe-chunk', upload.single('audio'), async (req, res) => {
   let sonioxFileId = null;

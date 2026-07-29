@@ -36,12 +36,26 @@
   @keyframes pulse { 50% { opacity:0.3; } }
   label { display:block; font-size:0.85rem; color:#c8c8cc; margin-bottom:4px; }
   .hidden { display:none; }
+  .meter { height:8px; background:#2a2e37; border-radius:4px; overflow:hidden; margin-top:10px; }
+  .meter > div { height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#e2c455,#e25555); transition:width .08s linear; }
+  .timer { font-variant-numeric: tabular-nums; font-weight:600; }
+  .warn { color:#e2c455; }
 </style>
 </head>
 <body>
 
 <h1>Meeting Notes</h1>
 <p class="sub">Record or upload, review, then send to Hermes.</p>
+
+<div class="card hidden" id="recovery-card">
+  <label>Unfinished recording found</label>
+  <p class="sub" id="recoveryInfo">A previous recording didn't finish. Its audio was saved on this device.</p>
+  <div class="btn-row">
+    <button class="btn-primary" id="recoverBtn">Recover recording</button>
+    <button class="btn-danger" id="discardBtn">Clear recovered data</button>
+  </div>
+  <div class="status" id="recoveryStatus"></div>
+</div>
 
 <div class="card" id="capture-card">
   <label>Record live</label>
@@ -50,6 +64,7 @@
     <button class="btn-danger hidden" id="stopBtn">Stop</button>
   </div>
   <div class="status" id="recStatus"></div>
+  <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
 
   <label style="margin-top:16px;">Or upload a voice memo (e.g. from iPhone)</label>
   <input type="file" id="audioUpload" accept="audio/*" />
@@ -75,11 +90,20 @@
 
 <script>
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
-let currentStream = null, sessionId = null, recording = false;
+let currentStream = null, sessionId = null, recording = false, recovering = false;
 let segmentIndex = 0, segmentsTranscribed = 0, segmentTimer = null, pendingUploads = [];
+let currentSegmentChunkIndex = 0;
 // Recorder rotation interval. Default 5 min; overridden by SEGMENT_MINUTES in
 // .env, fetched from /api/config at load.
 let SEGMENT_MS = 5 * 60 * 1000;
+// Persist audio to IndexedDB this often (independent of segment rotation), so a
+// crash mid-segment loses at most this much audio. Also the MediaRecorder
+// timeslice: each fired chunk is written to IndexedDB the moment it arrives.
+const TIMESLICE_MS = 30 * 1000;
+// Recording heartbeat + keep-awake + level-meter state.
+let elapsedTimer = null, recStartTime = 0;
+let wakeLock = null;
+let audioCtx = null, analyser = null, meterRAF = null;
 
 (async () => {
   try {
@@ -106,6 +130,151 @@ const sendBtn = document.getElementById('sendBtn');
 const sendStatus = document.getElementById('sendStatus');
 const downloadBtn = document.getElementById('downloadBtn');
 const rawTranscriptBox = document.getElementById('rawTranscript');
+const levelMeter = document.getElementById('levelMeter');
+const levelBar = document.getElementById('levelBar');
+const recoveryCard = document.getElementById('recovery-card');
+const recoveryInfo = document.getElementById('recoveryInfo');
+const recoveryStatus = document.getElementById('recoveryStatus');
+const recoverBtn = document.getElementById('recoverBtn');
+const discardBtn = document.getElementById('discardBtn');
+
+// ---------- IndexedDB: crash-proof audio persistence ----------
+// Every recorded chunk is written here the instant MediaRecorder emits it. A
+// segment's chunks are deleted only once that segment's transcript is safely
+// stored server-side; a full session is deleted only after a successful
+// finalize. Anything left over on next launch is a crashed session to recover.
+const IDB_NAME = 'meeting-notes-recovery';
+const IDB_VERSION = 1;
+const CHUNK_STORE = 'chunks';
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(CHUNK_STORE)) {
+        const store = db.createObjectStore(CHUNK_STORE, { keyPath: 'id', autoIncrement: true });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPut(record) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHUNK_STORE, 'readwrite');
+    tx.objectStore(CHUNK_STORE).add(record);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function idbGetAll() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHUNK_STORE, 'readonly');
+    const req = tx.objectStore(CHUNK_STORE).getAll();
+    req.onsuccess = () => { db.close(); resolve(req.result || []); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function idbDeleteIds(ids) {
+  if (!ids || !ids.length) return;
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHUNK_STORE, 'readwrite');
+    const store = tx.objectStore(CHUNK_STORE);
+    ids.forEach((id) => store.delete(id));
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function idbDeleteSegment(sid, segIdx) {
+  const all = await idbGetAll();
+  await idbDeleteIds(all.filter((r) => r.sessionId === sid && r.segmentIndex === segIdx).map((r) => r.id));
+}
+
+async function idbDeleteSession(sid) {
+  const all = await idbGetAll();
+  await idbDeleteIds(all.filter((r) => r.sessionId === sid).map((r) => r.id));
+}
+
+// ---------- Recording heartbeat (elapsed timer) ----------
+function fmtElapsed() {
+  const s = Math.max(0, Math.floor((Date.now() - recStartTime) / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+function tickRecStatus() {
+  recStatus.innerHTML = `<span class="rec-dot"></span> Recording… <span class="timer">${fmtElapsed()}</span>`
+    + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) transcribed` : '');
+}
+
+// ---------- Live audio level meter (proof the mic is alive) ----------
+function startMeter(stream) {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    levelMeter.classList.remove('hidden');
+    const draw = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / data.length);
+      levelBar.style.width = Math.min(100, Math.round(rms * 180)) + '%';
+      meterRAF = requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (e) {
+    console.warn('Level meter unavailable:', e.message);
+  }
+}
+
+function stopMeter() {
+  if (meterRAF) cancelAnimationFrame(meterRAF);
+  meterRAF = null;
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  analyser = null;
+  levelBar.style.width = '0%';
+  levelMeter.classList.add('hidden');
+}
+
+// ---------- Screen Wake Lock (keep the phone awake while recording) ----------
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (e) {
+    console.warn('Wake Lock request failed:', e.message);
+  }
+}
+
+async function releaseWakeLock() {
+  try { if (wakeLock) await wakeLock.release(); } catch (e) { /* ignore */ }
+  wakeLock = null;
+}
+
+// iOS/Android drop the wake lock when the tab is backgrounded; re-acquire on return.
+document.addEventListener('visibilitychange', () => {
+  if (recording && document.visibilityState === 'visible' && !wakeLock) acquireWakeLock();
+});
+
+// Guard against navigating away mid-recording (closes tab = lost live capture).
+window.addEventListener('beforeunload', (e) => {
+  if (recording) { e.preventDefault(); e.returnValue = ''; return ''; }
+});
 
 function refreshProcessBtn() {
   // The manual button only drives the uploaded-file path now; live recording
@@ -134,13 +303,31 @@ if (!canRecord) {
     : 'In-browser recording needs HTTPS. Upload a voice memo below instead.';
 }
 
-// Begin a fresh 5-minute segment on the shared mic stream.
+// Begin a fresh segment on the shared mic stream. A timeslice makes
+// MediaRecorder emit a chunk every TIMESLICE_MS; each chunk is both buffered
+// for this segment's final blob AND persisted to IndexedDB immediately, so a
+// crash loses at most one timeslice of audio.
 function startSegment() {
   recordedChunks = [];
+  currentSegmentChunkIndex = 0;
+  const thisSegment = segmentIndex; // capture: segmentIndex advances on stop
+  const thisSession = sessionId;
   mediaRecorder = new MediaRecorder(currentStream);
-  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+  mediaRecorder.ondataavailable = (e) => {
+    if (!e.data || !e.data.size) return;
+    recordedChunks.push(e.data);
+    const type = (mediaRecorder.mimeType || e.data.type || 'audio/webm').split(';')[0];
+    idbPut({
+      sessionId: thisSession,
+      segmentIndex: thisSegment,
+      chunkIndex: currentSegmentChunkIndex++,
+      mimeType: type,
+      blob: e.data,
+      createdAt: Date.now(),
+    }).catch((err) => console.warn('IndexedDB persist failed:', err && err.message));
+  };
   mediaRecorder.onstop = handleSegmentStop;
-  mediaRecorder.start();
+  mediaRecorder.start(TIMESLICE_MS);
 }
 
 // Arm the timer that rotates segments. Stopping the recorder flushes a complete,
@@ -164,6 +351,9 @@ function handleSegmentStop() {
   const index = segmentIndex++;
   if (blob.size > 0) {
     pendingUploads.push(uploadSegment(blob, `segment-${index}.${ext}`, index));
+  } else {
+    // Nothing captured; drop any stray persisted chunks for this segment.
+    idbDeleteSegment(sessionId, index).catch(() => {});
   }
 
   if (recording) {
@@ -177,25 +367,28 @@ function handleSegmentStop() {
 }
 
 async function uploadSegment(blob, name, index) {
+  const sid = sessionId; // capture: module value may change after finalize
   const fd = new FormData();
   fd.append('audio', blob, name);
-  fd.append('sessionId', sessionId);
+  fd.append('sessionId', sid);
   fd.append('index', String(index));
   try {
     const res = await fetch('/api/transcribe-chunk', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Segment transcription failed');
     segmentsTranscribed++;
-    if (recording) {
-      recStatus.innerHTML = `<span class="rec-dot"></span> Recording… (${segmentsTranscribed} segment(s) transcribed)`;
-    }
+    // Transcript is safe server-side now; this segment's local audio can go.
+    idbDeleteSegment(sid, index).catch(() => {});
+    // recStatus is owned by the heartbeat timer while recording; leave it be.
   } catch (err) {
-    processStatus.textContent = 'Segment error: ' + err.message;
+    // Keep the persisted chunks so recovery can retry this segment later.
+    (recovering ? recoveryStatus : processStatus).textContent = 'Segment error: ' + err.message;
   }
 }
 
 async function finalizeSession() {
   if (!sessionId) return;
+  const sid = sessionId;
   processStatus.textContent = 'Finishing transcription of the last segment…';
   await Promise.allSettled(pendingUploads);
 
@@ -212,6 +405,8 @@ async function finalizeSession() {
     rawTranscriptBox.value = data.rawTranscript || '';
     reviewCard.classList.remove('hidden');
     processStatus.textContent = 'Done. Review and edit below before sending.';
+    // Everything is server-side/rendered now; drop this session's local audio.
+    idbDeleteSession(sid).catch(() => {});
   } catch (err) {
     processStatus.textContent = 'Error: ' + err.message;
   } finally {
@@ -242,19 +437,28 @@ recordBtn.onclick = async () => {
   audioUpload.value = '';
   refreshProcessBtn();
   reviewCard.classList.add('hidden');
+  recoveryCard.classList.add('hidden');
   processStatus.textContent = '';
+
+  acquireWakeLock(); // best-effort; must not delay showing the UI or capturing
+  startMeter(currentStream);
+  recStartTime = Date.now();
+  recordBtn.classList.add('hidden');
+  stopBtn.classList.remove('hidden');
+  tickRecStatus();
+  elapsedTimer = setInterval(tickRecStatus, 1000);
 
   startSegment();
   scheduleRotation();
-  recordBtn.classList.add('hidden');
-  stopBtn.classList.remove('hidden');
-  const mins = +(SEGMENT_MS / 60000).toFixed(SEGMENT_MS % 60000 ? 1 : 0);
-  recStatus.innerHTML = `<span class="rec-dot"></span> Recording… (auto-transcribing every ${mins} min)`;
 };
 
 stopBtn.onclick = () => {
   recording = false;
   clearTimeout(segmentTimer);
+  clearInterval(elapsedTimer);
+  elapsedTimer = null;
+  stopMeter();
+  releaseWakeLock();
   recordBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
   recStatus.textContent = 'Recording stopped — transcribing the final segment…';
@@ -327,6 +531,101 @@ downloadBtn.onclick = () => {
   a.click();
   URL.revokeObjectURL(url);
 };
+
+// ---------- Crash recovery ----------
+// On launch, any chunks still in IndexedDB belong to a session that never
+// finished (a crash, force-quit, or tab kill). Offer to recover or discard.
+async function checkForRecovery() {
+  if (!('indexedDB' in window)) return;
+  try {
+    const all = await idbGetAll();
+    if (!all.length) return;
+    let bytes = 0;
+    const segs = new Set();
+    for (const r of all) {
+      bytes += (r.blob && r.blob.size) || 0;
+      segs.add(r.sessionId + ':' + r.segmentIndex);
+    }
+    recoveryInfo.textContent =
+      `A previous recording didn't finish. ${segs.size} segment(s), ~${(bytes / 1048576).toFixed(1)} MB of audio is saved on this device.`;
+    recoveryCard.classList.remove('hidden');
+  } catch (e) {
+    console.warn('Recovery check failed:', e.message);
+  }
+}
+
+recoverBtn.onclick = async () => {
+  recoverBtn.disabled = true;
+  discardBtn.disabled = true;
+  recoveryStatus.textContent = 'Recovering…';
+  recovering = true;
+  try {
+    const all = await idbGetAll();
+    if (!all.length) { recoveryStatus.textContent = 'Nothing to recover.'; return; }
+
+    // Recover the most-recently-written session.
+    const newest = all.reduce((a, b) => (b.createdAt > (a ? a.createdAt : -1) ? b : a), null);
+    const targetSid = newest.sessionId;
+    const recs = all.filter((r) => r.sessionId === targetSid);
+
+    // Ensure the server-side transcript dir exists (recreated if the process
+    // restarted). Any segment transcripts that survived on disk are kept.
+    const rres = await fetch('/api/session/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: targetSid }),
+    });
+    const rdata = await rres.json();
+    if (!rres.ok) throw new Error(rdata.error || 'Could not resume session');
+
+    sessionId = targetSid;
+    segmentsTranscribed = 0;
+    pendingUploads = [];
+
+    // Reassemble each segment from its chunks (in order) into one decodable file.
+    const bySeg = {};
+    for (const r of recs) (bySeg[r.segmentIndex] = bySeg[r.segmentIndex] || []).push(r);
+    const segIndices = Object.keys(bySeg).map(Number).sort((a, b) => a - b);
+    for (const seg of segIndices) {
+      const chunks = bySeg[seg].sort((a, b) => a.chunkIndex - b.chunkIndex);
+      const type = (chunks[0] && chunks[0].mimeType) || 'audio/webm';
+      const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+      const blob = new Blob(chunks.map((c) => c.blob), { type });
+      if (blob.size > 0) {
+        recoveryStatus.textContent = `Re-transcribing recovered segment ${seg}…`;
+        pendingUploads.push(uploadSegment(blob, `segment-${seg}.${ext}`, seg));
+      }
+    }
+    await Promise.allSettled(pendingUploads);
+
+    recoveryStatus.textContent = 'Structuring recovered notes with Claude…';
+    await finalizeSession(); // deletes the session from IndexedDB on success
+    recoveryCard.classList.add('hidden');
+  } catch (err) {
+    recoveryStatus.textContent = 'Recovery error: ' + err.message;
+  } finally {
+    recovering = false;
+    recoverBtn.disabled = false;
+    discardBtn.disabled = false;
+  }
+};
+
+discardBtn.onclick = async () => {
+  discardBtn.disabled = true;
+  recoverBtn.disabled = true;
+  try {
+    const all = await idbGetAll();
+    await idbDeleteIds(all.map((r) => r.id));
+    recoveryCard.classList.add('hidden');
+  } catch (e) {
+    recoveryStatus.textContent = 'Could not clear recovered data: ' + e.message;
+  } finally {
+    discardBtn.disabled = false;
+    recoverBtn.disabled = false;
+  }
+};
+
+checkForRecovery();
 </script>
 </body>
 </html>
