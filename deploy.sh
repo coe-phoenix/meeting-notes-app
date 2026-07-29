@@ -27,12 +27,11 @@ else
   git diff --name-only "$OLD_HASH" "$NEW_HASH" | sed 's/^/    /'
 fi
 
-if git diff --name-only "$OLD_HASH" "$NEW_HASH" | grep -qE '^package(-lock)?\.json$'; then
-  echo "==> package.json changed — running npm install"
-  npm install --production
-else
-  echo "==> package.json unchanged — skipping npm install"
-fi
+# Always install: it's fast and idempotent when nothing changed, and it
+# guarantees native deps (e.g. better-sqlite3) are present. Skipping this on a
+# stale/re-fetched commit was how a missing module crash-looped a deploy before.
+echo "==> Installing production dependencies (npm install --production)"
+npm install --production
 
 echo "==> Restarting $APP_NAME"
 pm2 restart "$APP_NAME"
