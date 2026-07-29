@@ -133,7 +133,8 @@
     <button class="btn-danger hidden" id="stopBtn">Stop</button>
   </div>
   <button class="btn-secondary hidden" id="tabBtn" style="width:100%; margin-top:10px;">Record tab / system audio</button>
-  <p class="sub hidden" id="tabHint" style="margin:6px 0 0; font-size:0.8rem;">Desktop Chrome/Edge only. In the picker, choose a tab and tick “Share tab audio” — good for capturing an online meeting.</p>
+  <button class="btn-secondary hidden" id="tabMicBtn" style="width:100%; margin-top:8px;">Record tab + my mic</button>
+  <p class="sub hidden" id="tabHint" style="margin:6px 0 0; font-size:0.8rem;">Desktop Chrome/Edge only. Pick a tab and tick “Share tab audio”. “Tab / system audio” captures the other people in the call; “Tab + my mic” also records your own voice.</p>
   <div class="status" id="recStatus"></div>
   <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
 
@@ -231,7 +232,10 @@
 <script>
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
 let currentStream = null, sessionId = null, recording = false, recovering = false;
-let captureKind = 'mic'; // 'mic' | 'tab' — source of the current live recording
+let captureKind = 'mic'; // 'mic' | 'tab' | 'tabmic' — source of the current live recording
+// For 'tabmic': the source tracks (tab audio + mic) and the AudioContext used to
+// mix them, so stopRecording can tear them down (the recorder only sees the mix).
+let extraTracks = [], mixCtx = null;
 let segmentIndex = 0, segmentsTranscribed = 0, segmentTimer = null, pendingUploads = [];
 let currentSegmentChunkIndex = 0;
 // Recorder rotation interval. Default 5 min; overridden by SEGMENT_MINUTES in
@@ -351,7 +355,7 @@ function fmtElapsed() {
 }
 
 function tickRecStatus() {
-  recStatus.innerHTML = `<span class="rec-dot"></span> Recording${captureKind === 'tab' ? ' (tab audio)' : ''}… <span class="timer">${fmtElapsed()}</span>`
+  recStatus.innerHTML = `<span class="rec-dot"></span> Recording${captureKind === 'tab' ? ' (tab audio)' : captureKind === 'tabmic' ? ' (tab + mic)' : ''}… <span class="timer">${fmtElapsed()}</span>`
     + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) saved` : '');
 }
 
@@ -445,9 +449,14 @@ if (!canRecord) {
 // Chromium browsers (absent on Safari and all of iOS/Android). Reveal the button
 // only where it's actually available; the picker still gates the real capture.
 const tabBtn = document.getElementById('tabBtn');
+const tabMicBtn = document.getElementById('tabMicBtn');
 const tabHint = document.getElementById('tabHint');
 const canCaptureTab = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
+if (canCaptureTab) {
+  tabBtn.classList.remove('hidden');
+  tabMicBtn.classList.remove('hidden');
+  tabHint.classList.remove('hidden');
+}
 
 // Acquire an AUDIO-ONLY stream from a shared tab/window/screen. getDisplayMedia
 // requires video:true, so we grab video too, then immediately drop it and keep
@@ -463,6 +472,46 @@ async function acquireTabStream() {
   // If the user hits the browser's native “Stop sharing”, end the recording too.
   audioTracks[0].addEventListener('ended', () => { if (recording) stopRecording(); });
   return new MediaStream(audioTracks);
+}
+
+// Tab/system audio MIXED with the local mic — the "record a meeting" case: the
+// tab carries everyone else, the mic carries you. Web Audio mixes both into one
+// track. If mic permission is denied we fall back to tab-only rather than fail.
+async function acquireTabMicStream() {
+  const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  const tabAudio = display.getAudioTracks();
+  if (!tabAudio.length) {
+    display.getTracks().forEach((t) => t.stop());
+    throw new Error('No audio was shared — in the picker, choose a tab (or your screen) and tick “Share tab audio”.');
+  }
+  display.getVideoTracks().forEach((t) => t.stop());
+  tabAudio[0].addEventListener('ended', () => { if (recording) stopRecording(); });
+
+  let micTracks = [];
+  try {
+    micTracks = (await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks();
+  } catch (e) {
+    // No mic → behave like plain tab capture (still captures the others).
+    (recovering ? recoveryStatus : finishStatus).textContent =
+      'Mic unavailable — recording tab audio only (your voice won’t be captured).';
+    return new MediaStream(tabAudio);
+  }
+
+  mixCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const dest = mixCtx.createMediaStreamDestination();
+  mixCtx.createMediaStreamSource(new MediaStream(tabAudio)).connect(dest);
+  mixCtx.createMediaStreamSource(new MediaStream(micTracks)).connect(dest);
+  // Remember the real sources so stopRecording can stop them + close the context
+  // (the recorder only ever sees the mixed output track).
+  extraTracks = [...tabAudio, ...micTracks];
+  return dest.stream;
+}
+
+// Tear down mic/tab sources + the mixing AudioContext (used by 'tabmic').
+function teardownMix() {
+  extraTracks.forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+  extraTracks = [];
+  if (mixCtx) { mixCtx.close().catch(() => {}); mixCtx = null; }
 }
 
 // Begin a fresh segment on the shared mic stream. A timeslice makes
@@ -585,12 +634,13 @@ async function startCapture(kind) {
   if (recording) return;
   if (kind === 'mic' && !canRecord) return;
   try {
-    currentStream = kind === 'tab'
-      ? await acquireTabStream()
+    currentStream = kind === 'tab' ? await acquireTabStream()
+      : kind === 'tabmic' ? await acquireTabMicStream()
       : await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
+    teardownMix(); // clean up any partial mix if acquisition failed midway
     recStatus.textContent = (err && err.name === 'NotAllowedError')
-      ? (kind === 'tab' ? 'Screen/tab share was cancelled.' : 'Microphone permission denied.')
+      ? (kind === 'mic' ? 'Microphone permission denied.' : 'Screen/tab share was cancelled.')
       : 'Could not start: ' + (err && err.message ? err.message : err);
     return;
   }
@@ -623,7 +673,7 @@ async function startCapture(kind) {
   startMeter(currentStream);
   recStartTime = Date.now();
   recordBtn.classList.add('hidden');
-  if (canCaptureTab) { tabBtn.classList.add('hidden'); tabHint.classList.add('hidden'); }
+  if (canCaptureTab) { tabBtn.classList.add('hidden'); tabMicBtn.classList.add('hidden'); tabHint.classList.add('hidden'); }
   stopBtn.classList.remove('hidden');
   tickRecStatus();
   elapsedTimer = setInterval(tickRecStatus, 1000);
@@ -633,7 +683,10 @@ async function startCapture(kind) {
 }
 
 recordBtn.onclick = () => startCapture('mic');
-if (canCaptureTab) tabBtn.onclick = () => startCapture('tab');
+if (canCaptureTab) {
+  tabBtn.onclick = () => startCapture('tab');
+  tabMicBtn.onclick = () => startCapture('tabmic');
+}
 
 function stopRecording() {
   if (!recording) return;
@@ -644,13 +697,14 @@ function stopRecording() {
   stopMeter();
   releaseWakeLock();
   recordBtn.classList.remove('hidden');
-  if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
+  if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabMicBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
   stopBtn.classList.add('hidden');
   recStatus.textContent = 'Recording stopped — finishing the last segment…';
   // Flushing the last segment triggers handleSegmentStop, which reveals the
   // "Transcribe this recording" button instead of auto-finalizing.
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
+  teardownMix(); // stop the underlying tab+mic sources and close the mixer
 }
 stopBtn.onclick = stopRecording;
 
