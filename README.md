@@ -15,7 +15,7 @@ npm start
 
 ## Flow
 
-1. **Record live** (in-browser) or **Upload a recording** (iPhone Voice Memos, WhatsApp, Zoom) — two separate cards on the home screen
+1. **Record live** (in-browser, from the **microphone**, or — desktop Chrome/Edge only — from a **shared tab / system audio** via the "Record tab / system audio" button, good for online meetings) or **Upload a recording** (iPhone Voice Memos, WhatsApp, Zoom) — two separate cards on the home screen
 2. For a live recording, optionally attach photos/PDFs (whiteboard shots, decks, business cards) before transcribing
 3. It queues a job: audio → Soniox (raw) → Claude cleans it → Claude summarises → a faithfulness audit
 4. Open the job to review the layers, read the summary (with its faithfulness verdict), edit, and download everything

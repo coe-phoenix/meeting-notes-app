@@ -87,6 +87,8 @@
     <button class="btn-primary" id="recordBtn">Start Recording</button>
     <button class="btn-danger hidden" id="stopBtn">Stop</button>
   </div>
+  <button class="btn-secondary hidden" id="tabBtn" style="width:100%; margin-top:10px;">Record tab / system audio</button>
+  <p class="sub hidden" id="tabHint" style="margin:6px 0 0; font-size:0.8rem;">Desktop Chrome/Edge only. In the picker, choose a tab and tick “Share tab audio” — good for capturing an online meeting.</p>
   <div class="status" id="recStatus"></div>
   <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
 
@@ -176,6 +178,7 @@
 <script>
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
 let currentStream = null, sessionId = null, recording = false, recovering = false;
+let captureKind = 'mic'; // 'mic' | 'tab' — source of the current live recording
 let segmentIndex = 0, segmentsTranscribed = 0, segmentTimer = null, pendingUploads = [];
 let currentSegmentChunkIndex = 0;
 // Recorder rotation interval. Default 5 min; overridden by SEGMENT_MINUTES in
@@ -295,7 +298,7 @@ function fmtElapsed() {
 }
 
 function tickRecStatus() {
-  recStatus.innerHTML = `<span class="rec-dot"></span> Recording… <span class="timer">${fmtElapsed()}</span>`
+  recStatus.innerHTML = `<span class="rec-dot"></span> Recording${captureKind === 'tab' ? ' (tab audio)' : ''}… <span class="timer">${fmtElapsed()}</span>`
     + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) saved` : '');
 }
 
@@ -383,6 +386,30 @@ if (!canRecord) {
   recStatus.textContent = window.isSecureContext
     ? 'This browser does not expose microphone recording. Upload a voice memo below instead.'
     : 'In-browser recording needs HTTPS. Upload a voice memo below instead.';
+}
+
+// Tab/system-audio capture uses getDisplayMedia, which only exists on desktop
+// Chromium browsers (absent on Safari and all of iOS/Android). Reveal the button
+// only where it's actually available; the picker still gates the real capture.
+const tabBtn = document.getElementById('tabBtn');
+const tabHint = document.getElementById('tabHint');
+const canCaptureTab = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
+
+// Acquire an AUDIO-ONLY stream from a shared tab/window/screen. getDisplayMedia
+// requires video:true, so we grab video too, then immediately drop it and keep
+// only the audio track(s) for the recorder.
+async function acquireTabStream() {
+  const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  const audioTracks = display.getAudioTracks();
+  if (!audioTracks.length) {
+    display.getTracks().forEach((t) => t.stop());
+    throw new Error('No audio was shared — in the picker, choose a tab (or your screen) and tick “Share tab audio”.');
+  }
+  display.getVideoTracks().forEach((t) => t.stop()); // audio only from here
+  // If the user hits the browser's native “Stop sharing”, end the recording too.
+  audioTracks[0].addEventListener('ended', () => { if (recording) stopRecording(); });
+  return new MediaStream(audioTracks);
 }
 
 // Begin a fresh segment on the shared mic stream. A timeslice makes
@@ -499,9 +526,22 @@ async function finalizeSession() {
   }
 }
 
-recordBtn.onclick = async () => {
-  if (!canRecord) return;
-  currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+// Shared entry point for both capture sources. `kind` picks the stream: the
+// microphone (getUserMedia) or a shared tab/system audio (getDisplayMedia).
+async function startCapture(kind) {
+  if (recording) return;
+  if (kind === 'mic' && !canRecord) return;
+  try {
+    currentStream = kind === 'tab'
+      ? await acquireTabStream()
+      : await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    recStatus.textContent = (err && err.name === 'NotAllowedError')
+      ? (kind === 'tab' ? 'Screen/tab share was cancelled.' : 'Microphone permission denied.')
+      : 'Could not start: ' + (err && err.message ? err.message : err);
+    return;
+  }
+
   try {
     const res = await fetch('/api/session/start', { method: 'POST' });
     const data = await res.json();
@@ -515,6 +555,7 @@ recordBtn.onclick = async () => {
   }
 
   recording = true;
+  captureKind = kind;
   segmentIndex = 0;
   segmentsTranscribed = 0;
   pendingUploads = [];
@@ -529,15 +570,20 @@ recordBtn.onclick = async () => {
   startMeter(currentStream);
   recStartTime = Date.now();
   recordBtn.classList.add('hidden');
+  if (canCaptureTab) { tabBtn.classList.add('hidden'); tabHint.classList.add('hidden'); }
   stopBtn.classList.remove('hidden');
   tickRecStatus();
   elapsedTimer = setInterval(tickRecStatus, 1000);
 
   startSegment();
   scheduleRotation();
-};
+}
 
-stopBtn.onclick = () => {
+recordBtn.onclick = () => startCapture('mic');
+if (canCaptureTab) tabBtn.onclick = () => startCapture('tab');
+
+function stopRecording() {
+  if (!recording) return;
   recording = false;
   clearTimeout(segmentTimer);
   clearInterval(elapsedTimer);
@@ -545,13 +591,15 @@ stopBtn.onclick = () => {
   stopMeter();
   releaseWakeLock();
   recordBtn.classList.remove('hidden');
+  if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
   stopBtn.classList.add('hidden');
   recStatus.textContent = 'Recording stopped — finishing the last segment…';
-  // Flushing the last segment triggers handleSegmentStop, which now reveals the
-  // "Transcribe & Structure" button instead of auto-finalizing.
+  // Flushing the last segment triggers handleSegmentStop, which reveals the
+  // "Transcribe this recording" button instead of auto-finalizing.
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
-};
+}
+stopBtn.onclick = stopRecording;
 
 // Live recording: structuring only runs when the user explicitly asks for it.
 // finalizeSession navigates to the job on success; on error it stays here so the
