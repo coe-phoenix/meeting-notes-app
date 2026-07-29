@@ -10,6 +10,19 @@ const fs = require('fs');
 
 const BASE = 'https://generativelanguage.googleapis.com';
 
+// Build a helpful Error from a failed Gemini response — a raw 403 body is
+// inscrutable, so add the actual remedy for the common key-blocked case.
+async function geminiError(prefix, res) {
+  const body = await res.text();
+  let hint = '';
+  if (res.status === 403 && /API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED/.test(body)) {
+    hint = ' — the Gemini API key is blocked for this service. Enable the "Generative Language API" for the key\'s project and remove any API restriction excluding it (or create a fresh key at https://aistudio.google.com/apikey)';
+  } else if (res.status === 429) {
+    hint = ' — Gemini rate limit / quota reached; try again later or check your plan';
+  }
+  return new Error(`${prefix} (${res.status})${hint}: ${body}`);
+}
+
 const TRANSCRIBE_PROMPT = `You are transcribing audio from a Malaysian business meeting. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese, often within a single sentence.
 
 Transcribe it verbatim. Rules:
@@ -36,7 +49,7 @@ async function startResumableUpload(apiKey, numBytes, mimeType, displayName) {
     },
     body: JSON.stringify({ file: { display_name: displayName || 'recording' } }),
   });
-  if (!res.ok) throw new Error(`Gemini upload start failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw await geminiError('Gemini upload start failed', res);
   const url = res.headers.get('x-goog-upload-url');
   if (!url) throw new Error('Gemini did not return an upload URL');
   return url;
@@ -52,7 +65,7 @@ async function uploadBytes(uploadUrl, bytes) {
     },
     body: bytes,
   });
-  if (!res.ok) throw new Error(`Gemini upload failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw await geminiError('Gemini upload failed', res);
   const data = await res.json();
   return data.file; // { name: 'files/…', uri, state, mimeType }
 }
@@ -62,7 +75,7 @@ async function waitUntilActive(apiKey, fileName, maxWaitMs = 5 * 60 * 1000) {
   const started = Date.now();
   while (Date.now() - started < maxWaitMs) {
     const res = await fetch(`${BASE}/v1beta/${fileName}?key=${apiKey}`);
-    if (!res.ok) throw new Error(`Gemini file status failed (${res.status}): ${await res.text()}`);
+    if (!res.ok) throw await geminiError('Gemini file status failed', res);
     const data = await res.json();
     if (data.state === 'ACTIVE') return;
     if (data.state === 'FAILED') throw new Error('Gemini could not process the audio file');
@@ -84,7 +97,7 @@ async function generate(apiKey, model, fileUri, mimeType) {
       contents: [{ parts: [{ text: TRANSCRIBE_PROMPT }, { file_data: { mime_type: mimeType, file_uri: fileUri } }] }],
     }),
   });
-  if (!res.ok) throw new Error(`Gemini transcription failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw await geminiError('Gemini transcription failed', res);
   const data = await res.json();
   const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
   return parts.map((p) => p.text || '').join('').trim();

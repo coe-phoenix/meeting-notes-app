@@ -23,6 +23,7 @@
   p.sub { color:#9a9aa2; margin-top:0; font-size:0.9rem; }
   .card { background:#1a1d24; border:1px solid #2a2e37; border-radius:12px; padding:16px; margin-bottom:16px; }
   button { border:none; border-radius:8px; padding:12px 18px; font-size:1rem; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:0.55; cursor:progress; }
   .btn-primary { background:#5b8def; color:white; width:100%; }
   .btn-danger { background:#e25555; color:white; }
   .btn-secondary { background:#2a2e37; color:#e8e8ea; }
@@ -639,10 +640,10 @@ async function finalizeSession() {
   if (!sessionId) return;
   const sid = sessionId;
   const status = recovering ? recoveryStatus : finishStatus;
-  status.textContent = 'Uploading the last segment…';
+  status.innerHTML = '<span class="spinner"></span>Uploading the last segment…';
   await Promise.allSettled(pendingUploads);
 
-  status.textContent = 'Assembling the recording and queuing…';
+  status.innerHTML = '<span class="spinner"></span>Assembling the recording and queuing…';
   const fd = new FormData();
   fd.append('sessionId', sessionId);
   fd.append('model', selectedModel);
@@ -803,9 +804,10 @@ async function uploadFileAsJob(file) {
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
   for (let i = 0; i < total; i++) {
     const chunk = file.slice(i * UPLOAD_CHUNK_BYTES, (i + 1) * UPLOAD_CHUNK_BYTES);
-    processStatus.textContent = `Uploading… chunk ${i + 1} of ${total}`;
+    processStatus.innerHTML = `<span class="spinner"></span>Uploading… ${i + 1} of ${total} part(s)`;
     await putChunkWithRetry(uploadId, i, chunk);
   }
+  processStatus.innerHTML = '<span class="spinner"></span>Finishing upload…';
 
   const doneRes = await fetch(`/api/uploads/${uploadId}/complete`, {
     method: 'POST',
@@ -820,17 +822,21 @@ async function uploadFileAsJob(file) {
 processBtn.onclick = async () => {
   if (!uploadedAudioFile) return;
   processBtn.disabled = true;
+  const label = processBtn.textContent;
+  processBtn.textContent = 'Uploading…';
+  processStatus.innerHTML = '<span class="spinner"></span>Preparing upload…';
   try {
     const jobId = await uploadFileAsJob(uploadedAudioFile);
-    processStatus.textContent = 'Queued. You can close the app — it keeps processing.';
+    processStatus.textContent = 'Queued ✓ You can close the app — it keeps processing.';
     uploadedAudioFile = null;
     audioUpload.value = '';
+    processBtn.textContent = label;
     refreshProcessBtn();
     location.hash = `#/jobs/${jobId}`; // jump to the job detail to watch progress
   } catch (err) {
     processStatus.textContent = 'Error: ' + err.message;
-  } finally {
-    processBtn.disabled = false;
+    processBtn.textContent = label;
+    refreshProcessBtn();
   }
 };
 
