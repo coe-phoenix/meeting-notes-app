@@ -167,6 +167,7 @@ async function run() {
       raw_transcript: 'Speaker 0 [00:00]: raw layer text',
       cleaned_transcript: 'Speaker 0 [00:00]: cleaned layer text [UNCLEAR]',
       markdown: '# Seeded summary\n- point one [00:00]',
+      faithfulness: JSON.stringify({ version: 'faithful-test', total: 2, supported: 2, unsupportedCount: 0, unsupported: [], pass: true }),
       audio_path: audioPath,
     });
 
@@ -175,6 +176,8 @@ async function run() {
       detail.job.cleanedTranscript.includes('cleaned layer') &&
       detail.job.hasCleaned === true && detail.job.hasAudio === true &&
       typeof detail.job.expiresAt === 'number');
+    ok('detail exposes parsed faithfulness verdict',
+      detail.job.faithfulness && detail.job.faithfulness.pass === true && detail.job.faithfulness.total === 2);
 
     const clRes = await fetch(`${BASE}/api/jobs/${ready.id}/download/transcript-cleaned.txt`);
     const clText = await clRes.text();

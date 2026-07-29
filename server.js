@@ -11,6 +11,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const archiver = require('archiver');
 const icons = require('./icons');
 const jobs = require('./db');
+const prompts = require('./prompts');
 
 const execFileP = promisify(execFile);
 
@@ -224,94 +225,8 @@ async function sonioxCleanup(transcriptionId, fileId) {
   }
 }
 
-// ---------- Claude pass 1: produce the CLEANED transcript layer ----------
-// Corrects STT errors in place but removes nothing — every utterance stays, so
-// the cleaned layer remains a faithful transcript, not a summary. The raw layer
-// is never touched; this output is stored separately as `cleaned_transcript`.
-async function claudeCleanTranscript(rawTranscript) {
-  const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-5',
-    // Generous ceiling: the cleaned transcript is roughly as long as the input.
-    // Very long meetings could still hit this; that's an accepted limitation.
-    max_tokens: 16000,
-    messages: [
-      {
-        role: 'user',
-        content: `You are cleaning a raw speech-to-text transcript from a Malaysian business meeting. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese, sometimes within a single sentence. It is machine-generated and contains errors, especially on proper nouns, company names, and code-switched phrases. Speaker labels, [language] tags and [mm:ss] timestamps were added by the transcription engine.
-
-Your task — clean, do not summarise:
-1. Fix obvious transcription errors using context, especially proper nouns and code-switched phrases.
-2. Remove NOTHING. Every utterance must remain — this is still a full transcript, not a summary. Do not condense, reorder, or drop filler.
-3. Preserve the original language mix. Do not translate; keep phrases in the language spoken.
-4. Keep the structure exactly: the \`Speaker N [mm:ss]:\` turn markers and \`[language]\` tags stay where they are.
-5. Where a word or phrase is garbled and you cannot recover it confidently, replace only that span with [UNCLEAR] — never guess a name or number.
-
-Output only the cleaned transcript, with the same structure and no preamble or commentary.
-
-Raw transcript:
-${rawTranscript}`,
-      },
-    ],
-  });
-  return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-}
-
-// ---------- Claude pass 2: structure the cleaned transcript into markdown ----------
-// Receives the CLEANED transcript (falls back to raw if cleaning was skipped) so
-// the summary is built on the best available text.
-async function claudeStructureNotes(transcript, attachments) {
-  const today = new Date().toISOString().slice(0, 10);
-
-  const content = [
-    {
-      type: 'text',
-      text: `You are turning a cleaned speech-to-text transcript from a Malaysian business meeting into a structured record. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese. The transcript is annotated with [language] tags and, at each speaker turn, an [mm:ss] timestamp marking where in the audio that turn begins.
-
-Your task:
-1. Preserve the original language mix in any quoted phrasing — do not translate everything into English; add a short English gloss in brackets only where it aids comprehension.
-2. Output a markdown meeting record using exactly this template:
-
-### ${today} — <Meeting type> (<attendees>)
-- Context:
-- What they need:
-- Signals: budget / timeline / decision-maker
-- Our angle: (products/services that fit)
-- Agreed next step:
-- Proposal due:
-
-Rules for the template: use ${today} as the date unless the transcript clearly states another date. If meeting type, attendees, or any field is not evident from the material, write [NOT STATED] — never invent names, numbers, or commitments. If attached images or PDFs contain relevant context (whiteboard notes, a deck, a business card), fold that into the appropriate field.
-
-Timestamp citations (self-verifying summary): for every field you fill in, append the [mm:ss] reference(s) to the moment(s) in the transcript that support it, e.g. \`- Agreed next step: send proposal by Friday [12:34]\`. Use only [mm:ss] values that actually appear in the transcript — never invent one. Omit the citation on any field marked [NOT STATED].
-
-Output only the markdown record, with no preamble.
-
-Transcript:
-${transcript}`,
-    },
-  ];
-
-  for (const att of attachments) {
-    if (att.mimetype === 'application/pdf') {
-      content.push({
-        type: 'document',
-        source: { type: 'base64', media_type: 'application/pdf', data: att.base64 },
-      });
-    } else if (att.mimetype.startsWith('image/')) {
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: att.mimetype, data: att.base64 },
-      });
-    }
-  }
-
-  const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-5',
-    max_tokens: 2000,
-    messages: [{ role: 'user', content }],
-  });
-
-  return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-}
+// The Claude passes (clean → structure → faithfulness audit) and their prompts
+// live in ./prompts.js so the eval harness shares exactly the same logic.
 
 // ---------- Duration from Soniox tokens (Phase 3 will use full timestamps) ----------
 function tokensDurationMinutes(tokens) {
@@ -420,16 +335,28 @@ async function processJob(job) {
   // fall back to summarising the raw layer rather than failing the whole job.
   let cleaned = '';
   try {
-    cleaned = await claudeCleanTranscript(text);
+    cleaned = await prompts.cleanTranscript(anthropic, text);
     if (cleaned) jobs.updateJob(job.id, { cleaned_transcript: cleaned });
   } catch (e) {
     console.error(`Job ${job.id} transcript-clean pass failed, using raw:`, e.message);
   }
 
   // Summary layer: built from the cleaned transcript (or raw if cleaning failed).
+  const summaryBasis = cleaned || text;
   const attachments = readJobAttachments(job.id);
-  const markdown = await claudeStructureNotes(cleaned || text, attachments);
-  jobs.updateJob(job.id, { status: 'ready', markdown });
+  const markdown = await prompts.structureNotes(anthropic, summaryBasis, attachments);
+
+  // Faithfulness audit (Phase 4): a second model pass checks the summary makes no
+  // claim the transcript doesn't support. Non-fatal — a job is still 'ready' even
+  // if the audit itself errors; the stored result just records that.
+  let faithfulness = null;
+  try {
+    faithfulness = await prompts.faithfulnessCheck(anthropic, summaryBasis, markdown);
+  } catch (e) {
+    console.error(`Job ${job.id} faithfulness audit failed:`, e.message);
+    faithfulness = { version: prompts.FAITHFULNESS_PROMPT_VERSION, error: e.message };
+  }
+  jobs.updateJob(job.id, { status: 'ready', markdown, faithfulness: JSON.stringify(faithfulness) });
 }
 
 // ---------- In-process serial worker ----------
@@ -590,6 +517,11 @@ app.post('/api/uploads/:id/complete', (req, res) => {
 // ---------- Jobs API (Phase 2 + Phase 3) ----------
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
+function parseJsonOrNull(s) {
+  if (!s) return null;
+  try { return JSON.parse(s); } catch { return null; }
+}
+
 function publicJob(j, { full = false } = {}) {
   if (!j) return null;
   const base = {
@@ -611,6 +543,7 @@ function publicJob(j, { full = false } = {}) {
     base.rawTranscript = j.raw_transcript || '';
     base.cleanedTranscript = j.cleaned_transcript || '';
     base.markdown = j.markdown || '';
+    base.faithfulness = parseJsonOrNull(j.faithfulness);
   }
   return base;
 }
@@ -792,7 +725,7 @@ app.post(
         base64: fs.readFileSync(f.path).toString('base64'),
       }));
 
-      const markdown = await claudeStructureNotes(rawTranscript, attachments);
+      const markdown = await prompts.structureNotes(anthropic, rawTranscript, attachments);
 
       res.json({ rawTranscript, markdown });
     } catch (err) {

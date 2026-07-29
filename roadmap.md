@@ -109,19 +109,21 @@ User must be able to upload, close the app, and come back when it's ready. Today
 
 Prompt rules alone drift. Make non-interpretation testable.
 
+> **Status: DONE (working tree).** Prompt logic extracted to `prompts.js` (shared by server + eval), with versioned prompts. Summary hardened + narrowed to a single attributed **Context** record (the interpretive sales-template fields — "What they need / Signals / Our angle / Agreed next step / Proposal due" — were dropped at the user's request). Faithfulness audit runs per job, is stored, and is surfaced on the job detail. Eval harness added. Verified by `test-prompts.mjs` + the faithfulness assertion in `test-phase2.mjs`.
+
 ### Prompt hardening
-- [ ] Extractive over abstractive: prefer near-verbatim phrasing from the transcript
-- [ ] Attribution rule: "Speaker 2 said the budget is 50k" — never "the budget is 50k" (attribution is summary; assertion is interpretation)
-- [ ] Keep + strengthen: [UNCLEAR] for garbled terms, [NOT STATED] for missing fields, never invent names/numbers/commitments
-- [ ] No advice, no conclusions, no sentiment, no "action items the model thinks are implied"
+- [x] Extractive over abstractive: prefer near-verbatim phrasing from the transcript *(`buildSummaryPrompt`, rule 1)*
+- [x] Attribution rule: "Speaker 2 said the budget is 50k" — never "the budget is 50k" *(rule 2 — attribute every point to a speaker)*
+- [x] Keep + strengthen: [UNCLEAR] for garbled terms, [NOT STATED] for missing fields, never invent names/numbers/commitments *(rule 3)*
+- [x] No advice, no conclusions, no sentiment, no "action items the model thinks are implied" *(rule 1, explicit)*
 
 ### Eval habit
-- [ ] Rerun the Phase 0 eval set on every prompt or model change
-- [ ] Automated faithfulness check: second model pass answering "does the summary contain any claim not present in the transcript?" (yes/no per bullet)
-- [ ] Log eval results per prompt version so regressions are visible
+- [x] Rerun the Phase 0 eval set on every prompt or model change *(`npm run eval` over `eval/cases/`; prompts live in `prompts.js` so a change is one edit + a `*_PROMPT_VERSION` bump. Fixtures are text transcripts today — swap in the real Phase 0 recordings' transcripts when they exist)*
+- [x] Automated faithfulness check: second model pass answering "does the summary contain any claim not present in the transcript?" *(`faithfulnessCheck` → per-claim `supported` yes/no + overall pass; runs in `processJob`, shown on job detail)*
+- [x] Log eval results per prompt version so regressions are visible *(`eval/run-eval.mjs` appends to `eval/results.jsonl` tagged with `SUMMARY_PROMPT_VERSION` + `FAITHFULNESS_PROMPT_VERSION`)*
 
 ### Definition of done
-- [ ] Faithfulness check passes 100% on eval set; any future prompt change re-proves it
+- [~] Faithfulness check passes 100% on eval set; any future prompt change re-proves it *(harness + gate built and self-tested via probe summaries; the actual 100%-on-eval run needs `ANTHROPIC_API_KEY` — run `npm run eval` to prove it)*
 
 ---
 

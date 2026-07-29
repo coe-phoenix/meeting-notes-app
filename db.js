@@ -28,6 +28,7 @@ db.exec(`
     raw_transcript   TEXT,
     cleaned_transcript TEXT,
     markdown         TEXT,
+    faithfulness     TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
   );
@@ -42,6 +43,7 @@ function ensureColumn(name, ddl) {
   if (!cols.includes(name)) db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${ddl}`);
 }
 ensureColumn('cleaned_transcript', 'TEXT');
+ensureColumn('faithfulness', 'TEXT'); // JSON: Phase 4 faithfulness-audit result
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -51,9 +53,9 @@ const STUCK = ['transcribing', 'summarising'];
 const stmts = {
   insert: db.prepare(`
     INSERT INTO jobs (id, user_id, original_name, mime, size_bytes, source, status,
-                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, created_at, updated_at)
+                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, faithfulness, created_at, updated_at)
     VALUES (@id, @user_id, @original_name, @mime, @size_bytes, @source, @status,
-            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @created_at, @updated_at)
+            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @faithfulness, @created_at, @updated_at)
   `),
   get: db.prepare(`SELECT * FROM jobs WHERE id = ?`),
   listAll: db.prepare(`SELECT * FROM jobs ORDER BY created_at DESC`),
@@ -79,6 +81,7 @@ function createJob(fields) {
     raw_transcript: fields.raw_transcript || null,
     cleaned_transcript: fields.cleaned_transcript || null,
     markdown: fields.markdown || null,
+    faithfulness: fields.faithfulness || null,
     created_at: now(),
     updated_at: now(),
   };
@@ -101,7 +104,7 @@ function nextQueuedJob() {
 // Partial update by whitelisted columns; always bumps updated_at.
 const UPDATABLE = new Set([
   'status', 'error', 'duration_minutes', 'audio_path',
-  'raw_transcript', 'cleaned_transcript', 'markdown', 'original_name', 'mime', 'size_bytes',
+  'raw_transcript', 'cleaned_transcript', 'markdown', 'faithfulness', 'original_name', 'mime', 'size_bytes',
 ]);
 function updateJob(id, patch) {
   const keys = Object.keys(patch).filter((k) => UPDATABLE.has(k));

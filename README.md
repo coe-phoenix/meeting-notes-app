@@ -15,10 +15,10 @@ npm start
 
 ## Flow
 
-1. Record in-browser, or upload a voice memo (iPhone Voice Memos works via the file picker)
-2. Optionally attach photos/PDFs (whiteboard shots, decks, business cards) for extra context
-3. "Transcribe & Structure" — audio → Soniox; transcript + attachments → Claude
-4. Review the raw transcript and edit the structured record (fix names, correct mis-heard terms)
+1. **Record live** (in-browser) or **Upload a recording** (iPhone Voice Memos, WhatsApp, Zoom) — two separate cards on the home screen
+2. For a live recording, optionally attach photos/PDFs (whiteboard shots, decks, business cards) before transcribing
+3. It queues a job: audio → Soniox (raw) → Claude cleans it → Claude summarises → a faithfulness audit
+4. Open the job to review the layers, read the summary (with its faithfulness verdict), edit, and download everything
 5. "Send to Telegram" posts the final markdown as a `.md` document to the Hermes bot chat
 
 ## Notes
@@ -90,6 +90,29 @@ self-describing (`2026-07-28-meeting-summary.md`, `…-transcript-raw.txt`, …)
 30) after creation — swept on boot and every 6h. The window is shown on each job
 (“Files auto-delete on …”), and every job has a manual **Delete now**.
 
+## "Summarise, don't interpret" guarantee (Phase 4)
+
+The summary is deliberately narrow and provably grounded:
+
+- **Hardened prompt** (`prompts.js`, `SUMMARY_PROMPT_VERSION`): extractive over
+  abstractive, every point **attributed to a speaker** ("Speaker 2 said …"),
+  `[UNCLEAR]` / `[NOT STATED]` preserved, and **no advice, conclusions, sentiment,
+  or implied action items**. The output is a single **Context** record (the old
+  sales-template fields were dropped) with `[mm:ss]` citations.
+- **Faithfulness audit**: a second Claude pass checks whether the summary makes any
+  claim the transcript doesn't support, returning a per-claim verdict. The result
+  is stored per job and shown on the job detail as a trust signal — green
+  "✓ N/N grounded" or a yellow list of unsupported claims to review before sending.
+- **Eval harness** (`npm run eval`): runs transcript fixtures in `eval/cases/`
+  through the same summarise + audit passes, plus hand-written "probe" summaries
+  that prove the auditor catches invented claims. Results append to
+  `eval/results.jsonl` tagged with the prompt versions, so regressions across
+  prompt changes stay visible. Requires `ANTHROPIC_API_KEY`; skips without one.
+
+The prompt logic lives in `prompts.js` so the server and the eval harness share
+exactly one source of truth — change a prompt, bump its `*_PROMPT_VERSION`, rerun
+the eval.
+
 ## Endpoints
 
 - `GET /` — the UI
@@ -107,11 +130,15 @@ self-describing (`2026-07-28-meeting-summary.md`, `…-transcript-raw.txt`, …)
 
 ## Tests
 
-Both suites require the server running on `:3000`: `PORT=3000 node server.js`.
+The Playwright/HTTP suites require the server running on `:3000`: `PORT=3000 node server.js`.
 
+- `npm run test:prompts` — pure unit tests for the faithfulness parse/score logic
+  in `prompts.js` (no server or API key needed).
 - `npm run test:phase1` — Playwright (fake mic, stubbed APIs): recording heartbeat/meter,
   IndexedDB persistence, crash → recover/discard.
 - `npm run test:phase2` — resumable upload assembly, worker lifecycle, retry, size/gap
   verification, boot re-scan, ready-job downloads, plus **Phase 3**: three-layer
-  detail fields, cleaned/audio/zip downloads, and manual delete.
-- `npm test` — runs both.
+  detail fields, cleaned/audio/zip downloads, manual delete, and the **Phase 4**
+  faithfulness verdict on the job detail.
+- `npm test` — runs all three.
+- `npm run eval` — **Phase 4** eval set (needs `ANTHROPIC_API_KEY`); see above.

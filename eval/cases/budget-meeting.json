@@ -1,0 +1,17 @@
+{
+  "name": "budget-meeting",
+  "note": "Short code-switched meeting with clear facts (budget RM50k, timeline Q3, proposal Friday). Probes verify the audit catches an invented number and passes a faithful summary.",
+  "transcript": "Speaker 0 [00:00]: [en] Thanks for coming. So what's the budget you're working with for this project?\n\nSpeaker 1 [00:12]: [en] We're looking at around RM50,000, and we need it done by Q3. [ms] Tapi kalau boleh cepat lagi bagus. [but if it can be faster, even better]\n\nSpeaker 0 [00:30]: [en] Noted. I'll send over a proposal by next Friday.",
+  "probes": [
+    {
+      "name": "faithful-summary",
+      "summary": "### 2026-07-29 — Project budget discussion\n- Context: Speaker 1 said the budget is around RM50,000 and it needs to be done by Q3 [00:12]\n- Context: Speaker 0 said they will send a proposal by next Friday [00:30]",
+      "expectPass": true
+    },
+    {
+      "name": "invented-budget-number",
+      "summary": "### 2026-07-29 — Project budget discussion\n- Context: Speaker 1 said the budget is RM80,000 and the deadline is Q1 [00:12]",
+      "expectPass": false
+    }
+  ]
+}

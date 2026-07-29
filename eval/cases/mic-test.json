@@ -1,0 +1,12 @@
+{
+  "name": "mic-test",
+  "note": "A trivial microphone test — the summary must stay minimal and must NOT invent meeting content.",
+  "transcript": "Speaker 0 [00:00]: [en] okay we're just doing a testing for this recording, I'm not sure how this works [zh] 所以我们现在要看看它是否能够 detect 不一样的 language [checking whether it can detect different languages]",
+  "probes": [
+    {
+      "name": "invented-meeting",
+      "summary": "### 2026-07-29 — Budget planning meeting\n- Context: Speaker 0 said the marketing budget for next quarter is RM120,000 and approved the new vendor [00:00]",
+      "expectPass": false
+    }
+  ]
+}

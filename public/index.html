@@ -40,6 +40,7 @@
   .meter > div { height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#e2c455,#e25555); transition:width .08s linear; }
   .timer { font-variant-numeric: tabular-nums; font-weight:600; }
   .warn { color:#e2c455; }
+  .good { color:#4caf50; }
   nav { display:flex; gap:8px; margin:8px 0 16px; }
   nav a { color:#c8c8cc; text-decoration:none; font-size:0.9rem; font-weight:600; padding:6px 12px; border-radius:8px; background:#1a1d24; border:1px solid #2a2e37; }
   nav a.active { background:#5b8def; color:#fff; border-color:#5b8def; }
@@ -81,34 +82,29 @@
 
 <div class="card" id="capture-card">
   <label>Record live</label>
+  <p class="sub" style="margin:2px 0 10px;">Records in the browser. Keep this tab open while recording.</p>
   <div class="btn-row">
     <button class="btn-primary" id="recordBtn">Start Recording</button>
     <button class="btn-danger hidden" id="stopBtn">Stop</button>
   </div>
   <div class="status" id="recStatus"></div>
   <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
-  <button class="btn-primary hidden" id="finishBtn" style="margin-top:12px;">Transcribe &amp; Structure</button>
 
-  <label style="margin-top:16px;">Or upload a voice memo (e.g. from iPhone)</label>
-  <input type="file" id="audioUpload" accept="audio/*" />
-
-  <label style="margin-top:16px;">Add photos / PDFs (optional — whiteboard, deck, business card, etc.)</label>
-  <input type="file" id="attachmentUpload" accept="image/*,application/pdf" multiple />
-
-  <button class="btn-primary" id="processBtn" style="margin-top:16px;" disabled>Transcribe & Structure</button>
-  <div class="status" id="processStatus"></div>
+  <!-- Revealed after you stop: attach context, then transcribe the recording. -->
+  <div id="finishWrap" class="hidden">
+    <label style="margin-top:16px;">Add photos / PDFs (optional — whiteboard, deck, business card)</label>
+    <input type="file" id="attachmentUpload" accept="image/*,application/pdf" multiple />
+    <button class="btn-primary" id="finishBtn" style="margin-top:12px; width:100%;">Transcribe this recording</button>
+  </div>
+  <div class="status" id="finishStatus"></div>
 </div>
 
-<div class="card hidden" id="review-card">
-  <label>Raw transcript (read-only — check for mis-heard names)</label>
-  <textarea id="rawTranscript" readonly style="min-height:120px; color:#9a9aa2;"></textarea>
-  <label style="margin-top:16px;">Review & edit before sending</label>
-  <textarea id="markdownOutput"></textarea>
-  <div class="btn-row">
-    <button class="btn-secondary" id="downloadBtn">Download .md</button>
-    <button class="btn-primary" id="sendBtn">Send to Telegram</button>
-  </div>
-  <div class="status" id="sendStatus"></div>
+<div class="card" id="upload-card">
+  <label>Upload a recording</label>
+  <p class="sub" style="margin:2px 0 10px;">iPhone Voice Memos (.m4a), WhatsApp voice notes, Zoom recordings — often more reliable than in-browser recording.</p>
+  <input type="file" id="audioUpload" accept="audio/*" />
+  <button class="btn-primary" id="processBtn" style="margin-top:16px;" disabled>Transcribe uploaded file</button>
+  <div class="status" id="processStatus"></div>
 </div>
 </div><!-- /view-home -->
 
@@ -153,6 +149,7 @@
     </div>
 
     <label style="margin-top:16px;">Summary — review & edit</label>
+    <div id="jobFaithful" class="status" style="margin-bottom:8px;"></div>
     <textarea id="jobMarkdown"></textarea>
     <div class="btn-row">
       <button class="btn-secondary" id="jobSaveBtn">Save edits</button>
@@ -212,15 +209,11 @@ const audioUpload = document.getElementById('audioUpload');
 const attachmentUpload = document.getElementById('attachmentUpload');
 const processBtn = document.getElementById('processBtn');
 const processStatus = document.getElementById('processStatus');
-const reviewCard = document.getElementById('review-card');
-const markdownOutput = document.getElementById('markdownOutput');
-const sendBtn = document.getElementById('sendBtn');
-const sendStatus = document.getElementById('sendStatus');
-const downloadBtn = document.getElementById('downloadBtn');
-const rawTranscriptBox = document.getElementById('rawTranscript');
 const levelMeter = document.getElementById('levelMeter');
 const levelBar = document.getElementById('levelBar');
+const finishWrap = document.getElementById('finishWrap');
 const finishBtn = document.getElementById('finishBtn');
+const finishStatus = document.getElementById('finishStatus');
 const recoveryCard = document.getElementById('recovery-card');
 const recoveryInfo = document.getElementById('recoveryInfo');
 const recoveryStatus = document.getElementById('recoveryStatus');
@@ -451,9 +444,9 @@ function handleSegmentStop() {
     scheduleRotation();
   } else {
     // User pressed Stop: the audio is captured, but structuring (a paid Claude
-    // call) waits for an explicit "Transcribe & Structure" click.
-    finishBtn.classList.remove('hidden');
-    recStatus.textContent = 'Recording captured. Click "Transcribe & Structure" when ready.';
+    // call) waits for an explicit "Transcribe this recording" click.
+    finishWrap.classList.remove('hidden');
+    recStatus.textContent = 'Recording captured. Add any photos/PDFs, then transcribe.';
   }
 }
 
@@ -473,14 +466,14 @@ async function uploadSegment(blob, name, index) {
     // recStatus is owned by the heartbeat timer while recording; leave it be.
   } catch (err) {
     // Keep the persisted chunks so recovery can retry this segment later.
-    (recovering ? recoveryStatus : processStatus).textContent = 'Segment error: ' + err.message;
+    (recovering ? recoveryStatus : finishStatus).textContent = 'Segment error: ' + err.message;
   }
 }
 
 async function finalizeSession() {
   if (!sessionId) return;
   const sid = sessionId;
-  const status = recovering ? recoveryStatus : processStatus;
+  const status = recovering ? recoveryStatus : finishStatus;
   status.textContent = 'Uploading the last segment…';
   await Promise.allSettled(pendingUploads);
 
@@ -528,10 +521,9 @@ recordBtn.onclick = async () => {
   uploadedAudioFile = null;
   audioUpload.value = '';
   refreshProcessBtn();
-  reviewCard.classList.add('hidden');
   recoveryCard.classList.add('hidden');
-  finishBtn.classList.add('hidden');
-  processStatus.textContent = '';
+  finishWrap.classList.add('hidden');
+  finishStatus.textContent = '';
 
   acquireWakeLock(); // best-effort; must not delay showing the UI or capturing
   startMeter(currentStream);
@@ -562,6 +554,8 @@ stopBtn.onclick = () => {
 };
 
 // Live recording: structuring only runs when the user explicitly asks for it.
+// finalizeSession navigates to the job on success; on error it stays here so the
+// button can be clicked again.
 finishBtn.onclick = async () => {
   finishBtn.disabled = true;
   const original = finishBtn.textContent;
@@ -571,15 +565,13 @@ finishBtn.onclick = async () => {
   } finally {
     finishBtn.disabled = false;
     finishBtn.textContent = original;
-    // Hide it once we've produced a reviewable record; keep it on error to retry.
-    if (!reviewCard.classList.contains('hidden')) finishBtn.classList.add('hidden');
   }
 };
 
 audioUpload.onchange = () => {
   if (audioUpload.files[0]) {
     uploadedAudioFile = audioUpload.files[0];
-    recStatus.textContent = `Using uploaded file: ${uploadedAudioFile.name}`;
+    processStatus.textContent = `Selected: ${uploadedAudioFile.name}`;
     refreshProcessBtn();
   }
 };
@@ -648,35 +640,6 @@ processBtn.onclick = async () => {
   } finally {
     processBtn.disabled = false;
   }
-};
-
-sendBtn.onclick = async () => {
-  sendBtn.disabled = true;
-  sendStatus.textContent = 'Sending to Telegram…';
-  try {
-    const res = await fetch('/api/send-telegram', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ markdown: markdownOutput.value }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Send failed');
-    sendStatus.textContent = 'Sent ✓';
-  } catch (err) {
-    sendStatus.textContent = 'Error: ' + err.message;
-  } finally {
-    sendBtn.disabled = false;
-  }
-};
-
-downloadBtn.onclick = () => {
-  const blob = new Blob([markdownOutput.value], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `meeting-notes-${new Date().toISOString().slice(0,10)}.md`;
-  a.click();
-  URL.revokeObjectURL(url);
 };
 
 // ---------- Crash recovery ----------
@@ -835,6 +798,28 @@ async function renderJobsList() {
   }
 }
 
+// Phase 4 trust signal: show the faithfulness-audit verdict on the summary.
+function renderFaithfulness(f) {
+  const el = document.getElementById('jobFaithful');
+  if (!f) { el.textContent = ''; el.className = 'status'; return; }
+  if (f.error) {
+    el.className = 'status muted';
+    el.textContent = 'Faithfulness check unavailable for this summary.';
+    return;
+  }
+  if (f.pass) {
+    el.className = 'status good';
+    el.textContent = `✓ Faithfulness: ${f.supported}/${f.total} claims grounded in the transcript.`;
+    return;
+  }
+  el.className = 'status warn';
+  const items = (f.unsupported || [])
+    .map((u) => `<li>${escapeHtml(u.claim || '(claim)')}${u.evidence ? ' — ' + escapeHtml(u.evidence) : ''}</li>`)
+    .join('');
+  el.innerHTML = `⚠ Faithfulness: ${f.unsupportedCount} of ${f.total} claim(s) not found in the transcript — review before sending:`
+    + `<ul style="margin:6px 0 0; padding-left:18px;">${items}</ul>`;
+}
+
 async function renderJobDetail(id) {
   currentJobId = id;
   const badge = document.getElementById('jobBadge');
@@ -877,6 +862,7 @@ async function renderJobDetail(id) {
       stopJobPoll();
       document.getElementById('jobRaw').value = j.rawTranscript || '';
       document.getElementById('jobMarkdown').value = j.markdown || '';
+      renderFaithfulness(j.faithfulness);
       // Cleaned layer only appears when a cleaning pass produced one.
       const cleanedWrap = document.getElementById('jobCleanedWrap');
       if (j.cleanedTranscript) {
