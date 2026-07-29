@@ -57,6 +57,14 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .muted { color:#9a9aa2; font-size:0.9rem; }
   a.link { color:#5b8def; cursor:pointer; text-decoration:none; }
+  a.danger-link { color:#e25555; }
+  #accountBar { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; font-size:0.85rem; }
+  #accountBar.hidden { display:none; } /* id selector would otherwise out-specify .hidden */
+  #accountBar .account-actions { display:flex; gap:14px; align-items:center; }
+  table.usage { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  table.usage th, table.usage td { text-align:left; padding:8px 6px; border-bottom:1px solid #2a2e37; }
+  table.usage th { color:#9a9aa2; font-weight:600; }
+  table.usage td.num { text-align:right; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -64,10 +72,47 @@
 <h1>Meeting Notes</h1>
 <p class="sub">Record or upload, review, then send to Hermes.</p>
 
-<nav>
+<nav id="mainNav">
   <a href="#/" id="nav-home">Record / Upload</a>
   <a href="#/jobs" id="nav-jobs">Jobs</a>
 </nav>
+
+<div id="accountBar" class="hidden">
+  <span id="accountEmail" class="muted"></span>
+  <span class="account-actions">
+    <span id="accountUsage" class="muted"></span>
+    <a class="link hidden" id="adminLink" href="#/admin">Admin</a>
+    <a class="link" id="logoutLink">Log out</a>
+    <a class="link danger-link" id="deleteAccountLink">Delete account</a>
+  </span>
+</div>
+
+<!-- Login (magic link) — shown only when AUTH=magic and not signed in -->
+<div id="view-login" class="hidden">
+  <div class="card">
+    <label>Sign in</label>
+    <p class="sub" style="margin:2px 0 12px;">Enter your email and we'll send you a one-time sign-in link. No password.</p>
+    <input type="email" id="loginEmail" placeholder="you@example.com" inputmode="email" autocomplete="email"
+           style="width:100%; box-sizing:border-box; font-size:16px; padding:12px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    <button class="btn-primary" id="loginBtn" style="margin-top:12px;">Email me a sign-in link</button>
+    <div class="status" id="loginStatus"></div>
+  </div>
+</div>
+
+<!-- Consent gate (PDPA) — shown once, on first sign-in -->
+<div id="view-consent" class="hidden">
+  <div class="card">
+    <label>Before you start</label>
+    <p class="sub" style="margin:2px 0 12px;">This app records and transcribes conversations. You are responsible for having the consent of everyone in any audio you record or upload.</p>
+    <p class="sub" id="consentRetention" style="margin:0 0 12px;"></p>
+    <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea;">
+      <input type="checkbox" id="consentCheck" style="margin-top:3px;" />
+      <span>I confirm I have consent to record everyone in the audio I submit, and I accept the retention policy above.</span>
+    </label>
+    <button class="btn-primary" id="consentBtn" style="margin-top:14px;" disabled>Agree &amp; continue</button>
+    <div class="status" id="consentStatus"></div>
+  </div>
+</div>
 
 <div id="view-home">
 <div class="card hidden" id="recovery-card">
@@ -172,6 +217,14 @@
       <button class="btn-primary" id="jobDlAll">Download all (.zip)</button>
     </div>
     <div class="status" id="jobActionStatus"></div>
+  </div>
+</div>
+
+<div id="view-admin" class="hidden">
+  <a class="link" href="#/">&larr; Back</a>
+  <div class="card" style="margin-top:12px;">
+    <label>Usage this month <span id="adminMonth" class="muted"></span></label>
+    <div id="adminList" style="margin-top:12px;"><p class="muted">Loading…</p></div>
   </div>
 </div>
 
@@ -783,13 +836,14 @@ discardBtn.onclick = async () => {
   }
 };
 
-checkForRecovery();
+// (checkForRecovery runs from init(), once past the auth gate.)
 
 // ---------- Jobs UI + hash router (Phase 2) ----------
 const views = {
   home: document.getElementById('view-home'),
   jobs: document.getElementById('view-jobs'),
   job: document.getElementById('view-job'),
+  admin: document.getElementById('view-admin'),
 };
 const navHome = document.getElementById('nav-home');
 const navJobs = document.getElementById('nav-jobs');
@@ -1036,6 +1090,9 @@ document.getElementById('jobDeleteBtn').onclick = async () => {
 };
 
 function router() {
+  // While an auth screen is up (not signed in, or consent pending), ignore hash
+  // navigation so app views can't render over the login/consent gate.
+  if (ME && ME.authEnabled && (!ME.user || !ME.user.consentAt)) return;
   stopJobPoll();
   stopJobsPoll();
   const hash = location.hash || '#/';
@@ -1046,12 +1103,149 @@ function router() {
   } else if (hash === '#/jobs') {
     showView('jobs');
     renderJobsList();
+  } else if (hash === '#/admin') {
+    showView('admin');
+    renderAdmin();
   } else {
     showView('home');
   }
 }
 window.addEventListener('hashchange', router);
-router();
+
+// ---------- Auth / account gate (Phase 5) ----------
+let ME = null; // cached /api/me
+const authViews = {
+  login: document.getElementById('view-login'),
+  consent: document.getElementById('view-consent'),
+};
+const mainNav = document.getElementById('mainNav');
+const accountBar = document.getElementById('accountBar');
+const fmtMins = (n) => Math.round((n || 0) * 10) / 10;
+
+async function fetchMe() {
+  try {
+    const res = await fetch('/api/me');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+function paintAccountBar(me) {
+  if (!me || !me.authEnabled || !me.user) { accountBar.classList.add('hidden'); return; }
+  document.getElementById('accountEmail').textContent = me.user.email;
+  const q = me.quota || {};
+  document.getElementById('accountUsage').textContent = q.minutesLimit > 0
+    ? `${fmtMins(q.minutesUsed)} / ${q.minutesLimit} min this month`
+    : `${fmtMins(q.minutesUsed)} min this month`;
+  document.getElementById('adminLink').classList.toggle('hidden', !me.user.isAdmin);
+  accountBar.classList.remove('hidden');
+}
+
+// Show one auth screen ('login' | 'consent') or null for the app.
+function showAuthScreen(which) {
+  authViews.login.classList.toggle('hidden', which !== 'login');
+  authViews.consent.classList.toggle('hidden', which !== 'consent');
+  if (which !== null) {
+    mainNav.classList.add('hidden');
+    accountBar.classList.add('hidden');
+    for (const k in views) views[k].classList.add('hidden');
+  } else {
+    mainNav.classList.remove('hidden');
+  }
+}
+
+document.getElementById('loginBtn').onclick = async () => {
+  const email = document.getElementById('loginEmail').value.trim();
+  const status = document.getElementById('loginStatus');
+  const btn = document.getElementById('loginBtn');
+  if (!email) { status.textContent = 'Enter your email.'; return; }
+  btn.disabled = true; status.textContent = 'Sending…';
+  try {
+    const res = await fetch('/api/auth/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not send link');
+    status.textContent = 'Check your email for a sign-in link — you can close this tab.';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally { btn.disabled = false; }
+};
+document.getElementById('loginEmail').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('loginBtn').click();
+});
+
+const consentCheck = document.getElementById('consentCheck');
+consentCheck.onchange = () => { document.getElementById('consentBtn').disabled = !consentCheck.checked; };
+document.getElementById('consentBtn').onclick = async () => {
+  const status = document.getElementById('consentStatus');
+  const btn = document.getElementById('consentBtn');
+  btn.disabled = true; status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/me/consent', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save');
+    await init(); // re-evaluate → enter the app
+  } catch (e) { status.textContent = 'Error: ' + e.message; btn.disabled = false; }
+};
+
+document.getElementById('logoutLink').onclick = async () => {
+  await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  location.hash = '#/';
+  await init();
+};
+
+document.getElementById('deleteAccountLink').onclick = async () => {
+  if (!confirm('Delete your account and everything in it — all recordings, transcripts, summaries, and audio? This cannot be undone.')) return;
+  try {
+    const res = await fetch('/api/me', { method: 'DELETE' });
+    if (!res.ok) throw new Error('Delete failed');
+    alert('Your account and all its data have been deleted.');
+    location.hash = '#/';
+    await init();
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+async function renderAdmin() {
+  const el = document.getElementById('adminList');
+  try {
+    const res = await fetch('/api/admin/usage');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load usage');
+    document.getElementById('adminMonth').textContent =
+      `(${data.month} · cap ${data.minutesLimit > 0 ? data.minutesLimit + ' min' : 'none'})`;
+    if (!data.users.length) { el.innerHTML = '<p class="muted">No users yet.</p>'; return; }
+    el.innerHTML = '<table class="usage"><thead><tr><th>User</th><th class="num">Minutes</th><th class="num">Jobs</th></tr></thead><tbody>'
+      + data.users.map((u) => `<tr><td>${escapeHtml(u.email)}${u.isAdmin ? ' · admin' : ''}</td><td class="num">${fmtMins(u.minutesUsed)}</td><td class="num">${u.jobs}</td></tr>`).join('')
+      + '</tbody></table>';
+  } catch (e) { el.innerHTML = `<p class="warn">${escapeHtml(e.message)}</p>`; }
+}
+
+// Decide what to show based on /api/me. Runs on load and after login/consent/logout.
+async function init() {
+  ME = await fetchMe();
+  // Auth disabled (single-user / APP_PASSWORD mode): run the app as before.
+  if (!ME || !ME.authEnabled) {
+    showAuthScreen(null);
+    paintAccountBar(ME);
+    checkForRecovery();
+    router();
+    return;
+  }
+  if (!ME.user) { showAuthScreen('login'); return; }
+  if (!ME.user.consentAt) {
+    document.getElementById('consentRetention').textContent =
+      `Recordings and transcripts are automatically deleted ${ME.retentionDays} days after you create them.`;
+    showAuthScreen('consent');
+    return;
+  }
+  showAuthScreen(null);
+  paintAccountBar(ME);
+  checkForRecovery();
+  router();
+}
+
+init();
 </script>
 </body>
 </html>

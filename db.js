@@ -34,6 +34,41 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);
+
+  -- Phase 5: accounts, sessions, magic-link tokens, and usage (for quotas).
+  CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    consent_at    INTEGER,
+    created_at    INTEGER NOT NULL,
+    last_login_at INTEGER
+  );
+  -- One-time magic-link tokens (stored hashed; short-lived; single-use).
+  CREATE TABLE IF NOT EXISTS login_tokens (
+    token_hash  TEXT PRIMARY KEY,
+    email       TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    consumed_at INTEGER,
+    created_at  INTEGER NOT NULL
+  );
+  -- Server-side sessions (cookie holds the raw token; we store only its hash).
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  -- Transcribed-minutes ledger. Kept SEPARATE from jobs so quota accounting
+  -- survives the retention sweep that deletes old jobs.
+  CREATE TABLE IF NOT EXISTS usage_events (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    job_id     TEXT,
+    minutes    REAL NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, created_at);
 `);
 
 // Lightweight migrations: add columns introduced after a DB was first created.
@@ -124,6 +159,120 @@ function jobsOlderThan(cutoffMs) {
   return stmts.olderThan.all(cutoffMs);
 }
 
+// ---------- Phase 5: users / sessions / tokens / usage ----------
+const authStmts = {
+  insertUser: db.prepare(`INSERT INTO users (id, email, is_admin, consent_at, created_at, last_login_at)
+                          VALUES (@id, @email, @is_admin, @consent_at, @created_at, @last_login_at)`),
+  userByEmail: db.prepare(`SELECT * FROM users WHERE email = ?`),
+  userById: db.prepare(`SELECT * FROM users WHERE id = ?`),
+  allUsers: db.prepare(`SELECT * FROM users ORDER BY created_at ASC`),
+  setConsent: db.prepare(`UPDATE users SET consent_at = ? WHERE id = ?`),
+  setLastLogin: db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`),
+  delUser: db.prepare(`DELETE FROM users WHERE id = ?`),
+
+  insertToken: db.prepare(`INSERT INTO login_tokens (token_hash, email, expires_at, consumed_at, created_at)
+                           VALUES (@token_hash, @email, @expires_at, NULL, @created_at)`),
+  getToken: db.prepare(`SELECT * FROM login_tokens WHERE token_hash = ?`),
+  consumeToken: db.prepare(`UPDATE login_tokens SET consumed_at = ? WHERE token_hash = ? AND consumed_at IS NULL`),
+  purgeTokens: db.prepare(`DELETE FROM login_tokens WHERE expires_at < ?`),
+
+  insertSession: db.prepare(`INSERT INTO auth_sessions (token_hash, user_id, expires_at, created_at)
+                             VALUES (@token_hash, @user_id, @expires_at, @created_at)`),
+  getSession: db.prepare(`SELECT * FROM auth_sessions WHERE token_hash = ?`),
+  delSession: db.prepare(`DELETE FROM auth_sessions WHERE token_hash = ?`),
+  delUserSessions: db.prepare(`DELETE FROM auth_sessions WHERE user_id = ?`),
+  purgeSessions: db.prepare(`DELETE FROM auth_sessions WHERE expires_at < ?`),
+
+  insertUsage: db.prepare(`INSERT INTO usage_events (id, user_id, job_id, minutes, created_at)
+                           VALUES (@id, @user_id, @job_id, @minutes, @created_at)`),
+  usageSince: db.prepare(`SELECT COALESCE(SUM(minutes), 0) AS mins FROM usage_events WHERE user_id = ? AND created_at >= ?`),
+  usageByUserSince: db.prepare(`SELECT user_id, COALESCE(SUM(minutes), 0) AS mins, COUNT(*) AS jobs
+                                FROM usage_events WHERE created_at >= ? GROUP BY user_id`),
+  usageForJob: db.prepare(`SELECT 1 FROM usage_events WHERE job_id = ? LIMIT 1`),
+  delUserUsage: db.prepare(`DELETE FROM usage_events WHERE user_id = ?`),
+};
+
+function createUser({ email, is_admin = 0 }) {
+  const user = {
+    id: crypto.randomUUID(),
+    email: String(email).toLowerCase().trim(),
+    is_admin: is_admin ? 1 : 0,
+    consent_at: null,
+    created_at: now(),
+    last_login_at: null,
+  };
+  authStmts.insertUser.run(user);
+  return user;
+}
+function getUserByEmail(email) { return authStmts.userByEmail.get(String(email).toLowerCase().trim()); }
+function getUserById(id) { return authStmts.userById.get(id); }
+function listUsers() { return authStmts.allUsers.all(); }
+function setUserConsent(id) { authStmts.setConsent.run(now(), id); return getUserById(id); }
+function setUserLastLogin(id) { authStmts.setLastLogin.run(now(), id); }
+
+function createLoginToken(tokenHash, email, ttlMs) {
+  authStmts.insertToken.run({
+    token_hash: tokenHash,
+    email: String(email).toLowerCase().trim(),
+    expires_at: now() + ttlMs,
+    created_at: now(),
+  });
+}
+// Returns the token row if valid + unexpired + unconsumed, marking it consumed.
+// Atomic-ish: the UPDATE ... WHERE consumed_at IS NULL guards against reuse.
+function consumeLoginToken(tokenHash) {
+  const row = authStmts.getToken.get(tokenHash);
+  if (!row) return null;
+  if (row.consumed_at != null) return null;
+  if (row.expires_at < now()) return null;
+  const info = authStmts.consumeToken.run(now(), tokenHash);
+  return info.changes === 1 ? row : null;
+}
+
+function createSession(tokenHash, userId, ttlMs) {
+  authStmts.insertSession.run({
+    token_hash: tokenHash, user_id: userId, expires_at: now() + ttlMs, created_at: now(),
+  });
+}
+function getSession(tokenHash) {
+  const row = authStmts.getSession.get(tokenHash);
+  if (!row) return null;
+  if (row.expires_at < now()) { authStmts.delSession.run(tokenHash); return null; }
+  return row;
+}
+function deleteSession(tokenHash) { authStmts.delSession.run(tokenHash); }
+
+function addUsage({ user_id, job_id, minutes }) {
+  authStmts.insertUsage.run({
+    id: crypto.randomUUID(), user_id, job_id: job_id || null,
+    minutes: minutes || 0, created_at: now(),
+  });
+}
+function usageMinutesSince(userId, sinceMs) { return authStmts.usageSince.get(userId, sinceMs).mins || 0; }
+function usageByUserSince(sinceMs) { return authStmts.usageByUserSince.all(sinceMs); }
+function hasUsageForJob(jobId) { return !!authStmts.usageForJob.get(jobId); }
+
+// Purge expired tokens/sessions (housekeeping, called on the retention sweep).
+function purgeExpiredAuth() {
+  authStmts.purgeTokens.run(now());
+  authStmts.purgeSessions.run(now());
+}
+
+// Full account teardown: returns the user's jobs (so the caller can delete their
+// files) then removes jobs, usage, sessions, and the user row.
+const delJobsByUser = db.prepare(`DELETE FROM jobs WHERE user_id = ?`);
+function deleteUserCompletely(userId) {
+  const userJobs = stmts.listByUser.all(userId);
+  const tx = db.transaction(() => {
+    delJobsByUser.run(userId);
+    authStmts.delUserUsage.run(userId);
+    authStmts.delUserSessions.run(userId);
+    authStmts.delUser.run(userId);
+  });
+  tx();
+  return userJobs;
+}
+
 // On boot, any job left mid-flight (transcribing/summarising) was interrupted by
 // a crash/restart. Processing is idempotent (re-run from the stored audio file),
 // so reset them to 'uploaded' to be re-queued.
@@ -147,4 +296,22 @@ module.exports = {
   deleteJob,
   jobsOlderThan,
   resetStuckJobs,
+  // Phase 5 — accounts / sessions / tokens / usage
+  createUser,
+  getUserByEmail,
+  getUserById,
+  listUsers,
+  setUserConsent,
+  setUserLastLogin,
+  createLoginToken,
+  consumeLoginToken,
+  createSession,
+  getSession,
+  deleteSession,
+  addUsage,
+  usageMinutesSince,
+  usageByUserSince,
+  hasUsageForJob,
+  purgeExpiredAuth,
+  deleteUserCompletely,
 };

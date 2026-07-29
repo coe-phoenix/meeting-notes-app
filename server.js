@@ -12,6 +12,7 @@ const archiver = require('archiver');
 const icons = require('./icons');
 const jobs = require('./db');
 const prompts = require('./prompts');
+const auth = require('./auth');
 
 const execFileP = promisify(execFile);
 
@@ -33,6 +34,12 @@ const SEGMENT_MINUTES = parseFloat(process.env.SEGMENT_MINUTES) > 0
 const RETENTION_DAYS = parseFloat(process.env.RETENTION_DAYS) > 0
   ? parseFloat(process.env.RETENTION_DAYS)
   : 30;
+// Per-user transcribed-minutes cap per calendar month. 0 (default) = unlimited;
+// enforced only when > 0 (and only meaningful with AUTH=magic). Soniox + Claude
+// both bill per-minute, so this is the cost guardrail.
+const QUOTA_MINUTES = parseFloat(process.env.QUOTA_MINUTES) > 0
+  ? parseFloat(process.env.QUOTA_MINUTES)
+  : 0;
 
 const SONIOX_BASE = 'https://api.soniox.com';
 const SONIOX_MODEL = 'stt-async-v5';
@@ -93,18 +100,58 @@ app.get('/sw.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'sw.js'));
 });
 
-// ---------- Simple shared-password gate (skipped if APP_PASSWORD unset) ----------
-app.use((req, res, next) => {
-  if (!APP_PASSWORD) return next();
-  const hdr = req.headers.authorization || '';
-  if (hdr.startsWith('Basic ')) {
-    const decoded = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
-    const pass = decoded.slice(decoded.indexOf(':') + 1);
-    if (pass === APP_PASSWORD) return next();
-  }
-  res.set('WWW-Authenticate', 'Basic realm="Meeting Notes"');
-  return res.status(401).send('Authentication required');
-});
+// ---------- Access control ----------
+// Two mutually-exclusive modes:
+//  • AUTH=magic  → per-user passwordless auth (auth.js): cookie sessions, each
+//    job tied to a user_id. Replaces the shared password entirely.
+//  • otherwise   → the legacy shared-password Basic-auth gate (single 'local'
+//    user), skipped when APP_PASSWORD is unset.
+if (auth.enabled) {
+  auth.attach(app, jobs);
+} else {
+  app.use((req, res, next) => {
+    if (!APP_PASSWORD) return next();
+    const hdr = req.headers.authorization || '';
+    if (hdr.startsWith('Basic ')) {
+      const decoded = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
+      const pass = decoded.slice(decoded.indexOf(':') + 1);
+      if (pass === APP_PASSWORD) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="Meeting Notes"');
+    return res.status(401).send('Authentication required');
+  });
+}
+
+// The owning user for the current request. With auth off, everything belongs to
+// a single implicit 'local' user (preserves pre-Phase-5 single-user behaviour).
+function currentUserId(req) {
+  return auth.enabled && req.user ? req.user.id : 'local';
+}
+
+// Start-of-current-calendar-month timestamp (for monthly quota windows).
+function monthStartMs() {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+// Current month's used minutes and the cap. minutesLimit 0 => unlimited.
+function quotaFor(userId) {
+  const used = jobs.usageMinutesSince(userId, monthStartMs());
+  return { minutesUsed: +used.toFixed(2), minutesLimit: QUOTA_MINUTES };
+}
+function quotaExceeded(userId) {
+  return QUOTA_MINUTES > 0 && jobs.usageMinutesSince(userId, monthStartMs()) >= QUOTA_MINUTES;
+}
+function quotaMessage(userId) {
+  const { minutesUsed, minutesLimit } = quotaFor(userId);
+  return `Monthly limit reached — you've used ${Math.floor(minutesUsed)} of ${minutesLimit} transcribed minutes this month. It resets on the 1st.`;
+}
+// Guard a job-creating route; returns true and sends 429 if the caller is capped.
+function blockedByQuota(req, res) {
+  const uid = currentUserId(req);
+  if (quotaExceeded(uid)) { res.status(429).json({ error: quotaMessage(uid) }); return true; }
+  return false;
+}
 
 const upload = multer({
   dest: UPLOAD_DIR,
@@ -331,6 +378,13 @@ async function processJob(job) {
     duration_minutes: durationMinutes,
   });
 
+  // Quota ledger: record the transcribed minutes once per job (guard against a
+  // retry / boot re-queue double-counting). Kept separate from the job so it
+  // survives retention deletion.
+  if (durationMinutes && !jobs.hasUsageForJob(job.id)) {
+    jobs.addUsage({ user_id: job.user_id, job_id: job.id, minutes: durationMinutes });
+  }
+
   // Cleaned layer: STT-error-corrected but nothing removed. If cleaning fails we
   // fall back to summarising the raw layer rather than failing the whole job.
   let cleaned = '';
@@ -406,6 +460,7 @@ function extFromName(name, mime) {
 // Init an upload: returns an id the client uses for every chunk PUT.
 app.post('/api/uploads', (req, res) => {
   try {
+    if (blockedByQuota(req, res)) return;
     const { filename, size, mime } = req.body || {};
     const id = crypto.randomUUID();
     const dir = uploadTmpDir(id);
@@ -499,6 +554,7 @@ app.post('/api/uploads/:id/complete', (req, res) => {
 
     const job = jobs.createJob({
       id: jobId,
+      user_id: currentUserId(req),
       original_name: meta.filename,
       mime: meta.mime,
       size_bytes: size,
@@ -548,20 +604,28 @@ function publicJob(j, { full = false } = {}) {
   return base;
 }
 
+// Fetch a job only if it belongs to the caller; otherwise 404 (don't reveal that
+// another user's job exists). Enforces per-user isolation on every job route.
+function ownedJob(req, res, id) {
+  const j = jobs.getJob(id);
+  if (!j || j.user_id !== currentUserId(req)) { res.status(404).json({ error: 'Job not found' }); return null; }
+  return j;
+}
+
 app.get('/api/jobs', (req, res) => {
-  res.json({ jobs: jobs.listJobs().map((j) => publicJob(j)) });
+  res.json({ jobs: jobs.listJobs(currentUserId(req)).map((j) => publicJob(j)) });
 });
 
 app.get('/api/jobs/:id', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
   res.json({ job: publicJob(j, { full: true }) });
 });
 
 // Persist an edited summary (so downloads / Telegram use the reviewed version).
 app.put('/api/jobs/:id/markdown', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
   const { markdown } = req.body || {};
   if (typeof markdown !== 'string') return res.status(400).json({ error: 'markdown must be a string' });
   jobs.updateJob(j.id, { markdown });
@@ -570,8 +634,8 @@ app.put('/api/jobs/:id/markdown', (req, res) => {
 
 // Retry a failed job. Idempotent processing means we just re-queue it.
 app.post('/api/jobs/:id/retry', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
   if (j.status !== 'failed') return res.status(400).json({ error: `Job is '${j.status}', not failed` });
   jobs.updateJob(j.id, { status: 'uploaded', error: null });
   setImmediate(pumpQueue);
@@ -595,8 +659,8 @@ function deleteJobFiles(j) {
 
 // Manual "delete now" — the per-job counterpart to the retention sweep.
 app.delete('/api/jobs/:id', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
   deleteJobFiles(j);
   jobs.deleteJob(j.id);
   res.json({ ok: true });
@@ -622,30 +686,34 @@ async function ensureMp3(j) {
 }
 
 app.get('/api/jobs/:id/download/summary.md', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j || !j.markdown) return res.status(404).json({ error: 'Summary not ready' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!j.markdown) return res.status(404).json({ error: 'Summary not ready' });
   sendDownload(res, `${jobDate(j)}-meeting-summary.md`, 'text/markdown', j.markdown);
 });
 
 // Raw layer: exactly what the engine heard (speaker + language + [mm:ss] tags).
 app.get('/api/jobs/:id/download/transcript.txt', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j || !j.raw_transcript) return res.status(404).json({ error: 'Transcript not ready' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!j.raw_transcript) return res.status(404).json({ error: 'Transcript not ready' });
   sendDownload(res, `${jobDate(j)}-transcript-raw.txt`, 'text/plain', j.raw_transcript);
 });
 
 // Cleaned layer: STT errors fixed, nothing removed, [UNCLEAR] markers preserved.
 app.get('/api/jobs/:id/download/transcript-cleaned.txt', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j || !j.cleaned_transcript) return res.status(404).json({ error: 'Cleaned transcript not available' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!j.cleaned_transcript) return res.status(404).json({ error: 'Cleaned transcript not available' });
   sendDownload(res, `${jobDate(j)}-transcript-cleaned.txt`, 'text/plain', j.cleaned_transcript);
 });
 
 // Bit-exact original audio (true raw). For uploads this is the file as sent; for
 // live recordings it's the losslessly-concatenated recording.
 app.get('/api/jobs/:id/download/audio', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j || !j.audio_path || !fs.existsSync(j.audio_path)) {
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!j.audio_path || !fs.existsSync(j.audio_path)) {
     return res.status(404).json({ error: 'Audio not available' });
   }
   res.download(j.audio_path, `${jobDate(j)}-meeting-audio${path.extname(j.audio_path)}`);
@@ -653,8 +721,9 @@ app.get('/api/jobs/:id/download/audio', (req, res) => {
 
 // mp3 convenience copy (transcoded once, then cached beside the job).
 app.get('/api/jobs/:id/download/audio.mp3', async (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j || !j.audio_path || !fs.existsSync(j.audio_path)) {
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!j.audio_path || !fs.existsSync(j.audio_path)) {
     return res.status(404).json({ error: 'Audio not available' });
   }
   try {
@@ -668,8 +737,8 @@ app.get('/api/jobs/:id/download/audio.mp3', async (req, res) => {
 
 // "Download all" — one zip with summary + both transcripts + the original audio.
 app.get('/api/jobs/:id/download/all.zip', (req, res) => {
-  const j = jobs.getJob(req.params.id);
-  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
   const date = jobDate(j);
   res.set('Content-Type', 'application/zip');
   res.set('Content-Disposition', `attachment; filename="${date}-meeting-bundle.zip"`);
@@ -691,6 +760,52 @@ app.get('/api/jobs/:id/download/all.zip', (req, res) => {
   archive.finalize();
 });
 
+// ---------- Account, quota, PDPA (Phase 5) ----------
+// Identity + quota + consent for the current session. Works in both modes: with
+// auth off it reports authEnabled:false so the UI skips login/consent entirely.
+app.get('/api/me', (req, res) => {
+  const uid = currentUserId(req);
+  const q = quotaFor(uid);
+  res.json({
+    authEnabled: auth.enabled,
+    retentionDays: RETENTION_DAYS,
+    quota: { ...q, month: new Date(monthStartMs()).toISOString().slice(0, 7) },
+    user: auth.enabled && req.user
+      ? { email: req.user.email, isAdmin: !!req.user.is_admin, consentAt: req.user.consent_at, createdAt: req.user.created_at }
+      : null,
+  });
+});
+
+// Record PDPA consent ("I have consent to record everyone in this audio").
+app.post('/api/me/consent', (req, res) => {
+  if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account to record consent for' });
+  const updated = jobs.setUserConsent(req.user.id);
+  res.json({ ok: true, consentAt: updated.consent_at });
+});
+
+// Account deletion (PDPA): remove all of the user's jobs + files + usage + row.
+app.delete('/api/me', (req, res) => {
+  if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account to delete' });
+  const userJobs = jobs.deleteUserCompletely(req.user.id);
+  for (const j of userJobs) deleteJobFiles(j);
+  auth.clearSessionCookie(res);
+  res.json({ ok: true, deletedJobs: userJobs.length });
+});
+
+// Admin: transcribed-minutes usage across all users this month.
+app.get('/api/admin/usage', (req, res) => {
+  if (!auth.enabled || !req.user || !req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
+  const byId = new Map(jobs.usageByUserSince(monthStartMs()).map((r) => [r.user_id, r]));
+  const users = jobs.listUsers().map((u) => {
+    const r = byId.get(u.id) || { mins: 0, jobs: 0 };
+    return {
+      email: u.email, isAdmin: !!u.is_admin, minutesUsed: +(+r.mins).toFixed(2), jobs: r.jobs,
+      createdAt: u.created_at, lastLoginAt: u.last_login_at,
+    };
+  });
+  res.json({ month: new Date(monthStartMs()).toISOString().slice(0, 7), minutesLimit: QUOTA_MINUTES, users });
+});
+
 // ---------- Route: process recording + attachments ----------
 app.post(
   '/api/process',
@@ -701,6 +816,7 @@ app.post(
     let transcriptionId = null;
 
     try {
+      if (blockedByQuota(req, res)) return;
       if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
       if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
 
@@ -823,6 +939,7 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
   let dir = null;
 
   try {
+    if (blockedByQuota(req, res)) return;
     dir = sessionDir(req.body.sessionId);
     if (!fs.existsSync(dir)) throw new Error('Unknown or expired session');
 
@@ -863,6 +980,7 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
 
     const job = jobs.createJob({
       id: jobId,
+      user_id: currentUserId(req),
       original_name: `live-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`,
       mime: `audio/${ext.slice(1)}`,
       size_bytes: size,
@@ -959,6 +1077,8 @@ function sweepRetention() {
     if (stale.length) {
       console.log(`Retention sweep: deleted ${stale.length} job(s) older than ${RETENTION_DAYS} day(s)`);
     }
+    // Also drop expired magic-link tokens and dead sessions.
+    jobs.purgeExpiredAuth();
   } catch (e) {
     console.error('Retention sweep failed:', e.message);
   }

@@ -113,6 +113,28 @@ The prompt logic lives in `prompts.js` so the server and the eval harness share
 exactly one source of truth — change a prompt, bump its `*_PROMPT_VERSION`, rerun
 the eval.
 
+## Accounts, quotas, PDPA (Phase 5)
+
+Off by default (single-user, shared `APP_PASSWORD`). Set `AUTH=magic` to turn on
+per-user accounts:
+
+- **Passwordless magic-link login** (`auth.js`): user enters their email, gets a
+  one-time sign-in link (sent via **Resend**; logged to the server console if
+  `RESEND_API_KEY` is unset, so it works before email is wired). Sessions are
+  opaque random tokens stored **hashed**, held in an httpOnly cookie — no
+  passwords, no JWT, no extra dependency. Needs `APP_BASE_URL` set.
+- **Per-user isolation**: every job is tied to a `user_id`; one user can't see,
+  download, or delete another's jobs (cross-user requests 404).
+- **Monthly quota** (`QUOTA_MINUTES`, 0 = unlimited): transcribed minutes are
+  tracked in a ledger that survives job retention; once a user is at the cap, new
+  uploads/recordings are blocked with a clear message. Usage (`X / Y min this
+  month`) shows in the header. `ADMIN_EMAILS` get an **Admin** usage view across
+  all users.
+- **PDPA basics**: a one-time consent gate ("I have consent to record everyone in
+  this audio") is required on first sign-in and logged with a timestamp; the
+  retention window is stated there; **Delete account** removes all of the user's
+  jobs, files, usage, sessions, and the account row.
+
 ## Endpoints
 
 - `GET /` — the UI
@@ -127,6 +149,8 @@ the eval.
 - **Jobs:** `GET /api/jobs` · `GET /api/jobs/:id` · `PUT /api/jobs/:id/markdown` · `POST /api/jobs/:id/retry` · `DELETE /api/jobs/:id` (delete now)
 - **Downloads:** `GET /api/jobs/:id/download/summary.md` · `…/transcript.txt` (raw) · `…/transcript-cleaned.txt` · `…/audio` (original) · `…/audio.mp3` · `…/all.zip`
 - `POST /api/send-telegram` — JSON `{ markdown }`
+- **Auth (AUTH=magic):** `POST /api/auth/request` (email → magic link) · `GET /auth/verify?token=` (sets session cookie) · `POST /api/auth/logout`
+- **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` · `DELETE /api/me` (delete account + all data) · `GET /api/admin/usage` (admin only)
 
 ## Tests
 
@@ -140,5 +164,8 @@ The Playwright/HTTP suites require the server running on `:3000`: `PORT=3000 nod
   verification, boot re-scan, ready-job downloads, plus **Phase 3**: three-layer
   detail fields, cleaned/audio/zip downloads, manual delete, and the **Phase 4**
   faithfulness verdict on the job detail.
-- `npm test` — runs all three.
+- `npm run test:phase5` — **Phase 5**: spawns its own `AUTH=magic` server on a
+  throwaway DB/port and verifies magic-link login, per-user job isolation, the
+  monthly quota block, and account deletion. Self-contained (no `:3000`, no email).
+- `npm test` — runs all four suites.
 - `npm run eval` — **Phase 4** eval set (needs `ANTHROPIC_API_KEY`); see above.

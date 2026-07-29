@@ -131,23 +131,25 @@ Prompt rules alone drift. Make non-interpretation testable.
 
 Last, because everything above is testable single-user.
 
+> **Status: DONE (working tree).** Opt-in via `AUTH=magic` (default keeps the single-user `APP_PASSWORD` gate, so existing deploys + tests are unaffected). New `auth.js` + `users`/`login_tokens`/`auth_sessions`/`usage_events` tables. Verified by `test-phase5.mjs` (self-spawns an `AUTH=magic` server) and a full manual walkthrough (login → consent → app → account bar). Email via **Resend** (dev fallback logs the link).
+
 ### Auth (thin as possible)
-- [ ] Magic-link or email-OTP login (no passwords to store or forget) - use resend, i have subscribed to resend.
-- [ ] Session management; each job tied to user_id
-- [ ] Replace shared APP_PASSWORD with per-user auth
+- [x] Magic-link login (no passwords to store or forget) — **Resend** *(passwordless: email → one-time link → cookie session; `RESEND_API_KEY` + `APP_BASE_URL`)*
+- [x] Session management; each job tied to user_id *(opaque hashed session tokens in httpOnly cookies; `createJob` sets `user_id`; every job route scoped to the owner)*
+- [x] Replace shared APP_PASSWORD with per-user auth *(`AUTH=magic` swaps the Basic-auth gate for the cookie gate)*
 
 ### Quotas (Soniox + Claude cost real money per minute)
-- [ ] Track transcribed minutes per user per month
-- [ ] Enforce a cap with a clear "you've used X of Y minutes" display
-- [ ] Admin view: usage across users
+- [x] Track transcribed minutes per user per month *(`usage_events` ledger, written once per job; kept separate from jobs so it survives retention)*
+- [x] Enforce a cap with a clear "you've used X of Y minutes" display *(`QUOTA_MINUTES`; blocks job creation at the cap with a message; "X / Y min this month" in the header)*
+- [x] Admin view: usage across users *(`GET /api/admin/usage` + Admin screen for `ADMIN_EMAILS`)*
 
 ### PDPA / consent basics
-- [ ] Onboarding line: user is responsible for having consent to record third parties
-- [ ] Stated retention policy (from Phase 3) surfaced at signup
-- [ ] Account deletion = all files + records gone
+- [x] Onboarding line: user is responsible for having consent to record third parties *(consent gate on first sign-in, logged with `consent_at`)*
+- [x] Stated retention policy (from Phase 3) surfaced at signup *(shown on the consent gate: "deleted N days after you create them")*
+- [x] Account deletion = all files + records gone *(`DELETE /api/me` removes jobs, files, usage, sessions, and the user row)*
 
 ### Definition of done
-- [ ] Two users can't see each other's jobs; quota blocks the 61st minute; deleting an account leaves nothing behind
+- [x] Two users can't see each other's jobs; quota blocks the 61st minute; deleting an account leaves nothing behind *(all three proven in `test-phase5.mjs`)*
 
 ---
 

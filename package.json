@@ -5,10 +5,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test-prompts.mjs && node test-phase1.mjs && node test-phase2.mjs",
+    "test": "node test-prompts.mjs && node test-phase1.mjs && node test-phase2.mjs && node test-phase5.mjs",
     "test:prompts": "node test-prompts.mjs",
     "test:phase1": "node test-phase1.mjs",
     "test:phase2": "node test-phase2.mjs",
+    "test:phase5": "node test-phase5.mjs",
     "eval": "node eval/run-eval.mjs"
   },
   "dependencies": {
