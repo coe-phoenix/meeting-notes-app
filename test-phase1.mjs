@@ -42,19 +42,24 @@ async function run() {
     const { context, page } = await newPage(browser);
     await page.goto(BASE);
     await page.click('#recordBtn');
-    await sleep(400);
+    // Wait for capture to actually start (fake getUserMedia init varies in headless).
+    await page.waitForSelector('#stopBtn:not(.hidden)', { timeout: 8000 });
+    ok('stop button shown', await page.isVisible('#stopBtn'));
 
     const meterVisible = await page.isVisible('#levelMeter');
     ok('meter visible while recording', meterVisible);
     const recText = await page.textContent('#recStatus');
     ok('heartbeat timer shown (mm:ss)', /\d\d:\d\d/.test(recText));
-    ok('stop button shown', await page.isVisible('#stopBtn'));
 
     // Let a couple of segments rotate + persist + (stub) transcribe.
     await sleep(2600);
     await page.click('#stopBtn');
+    // Stop no longer auto-finalizes: the user must click Transcribe & Structure.
+    await page.waitForSelector('#finishBtn:not(.hidden)', { timeout: 8000 });
+    ok('review card hidden until Transcribe clicked', !(await page.isVisible('#review-card')));
+    await page.click('#finishBtn');
     await page.waitForSelector('#review-card:not(.hidden)', { timeout: 8000 });
-    ok('review card appears after stop', await page.isVisible('#review-card'));
+    ok('review card appears after Transcribe clicked', await page.isVisible('#review-card'));
     ok('markdown populated from finalize', (await page.inputValue('#markdownOutput')).includes('Stub summary'));
     ok('meter hidden after stop', !(await page.isVisible('#levelMeter')));
 

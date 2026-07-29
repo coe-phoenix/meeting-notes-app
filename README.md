@@ -49,20 +49,41 @@ test a real Cantonese clip before relying on it.
 - While recording: **Screen Wake Lock** (re-acquired on tab return), a live
   **elapsed timer + audio-level meter**, and a **beforeunload** warning.
 
+## Async jobs + resumable upload (Phase 2)
+
+- Uploaded audio no longer blocks the tab. The client splits the file into 5MB
+  chunks, PUTs each (with retry/backoff), then the server **assembles, verifies
+  total size, and enqueues a job**. You can close the app and come back.
+- Jobs live in **SQLite** (`db.js`, stored under `data/app.db`) with states
+  `uploaded → transcribing → summarising → ready → failed`.
+- A single in-process **worker** drains the queue one job at a time. On boot it
+  **re-scans** any job stranded mid-run (crash/pm2 restart) and re-queues it;
+  processing is idempotent (re-run from the stored audio file).
+- **Jobs list** and **job detail** views (hash router `#/jobs`, `#/jobs/:id`) show
+  status/progress, let you review + edit the summary, **retry** failures, and
+  **download** `summary.md` / `transcript.txt` when ready.
+- Finished **live recordings** are also recorded as jobs, so history is unified.
+
 ## Endpoints
 
 - `GET /` — the UI
 - `GET /healthz` — reports which credentials are configured
 - `GET /api/config` — client runtime config (segment length)
-- `POST /api/process` — multipart: `audio` (1 file), `attachments` (up to 10)
+- `POST /api/process` — multipart: `audio` (1 file), `attachments` (up to 10)  *(legacy single-shot path)*
 - `POST /api/session/start` — mint a live-recording session id
 - `POST /api/session/resume` — JSON `{ sessionId }`; recreate a session dir during crash recovery
 - `POST /api/transcribe-chunk` — multipart: `audio` segment + `sessionId` + `index`
-- `POST /api/finalize` — multipart: `sessionId` + `attachments`; stitches + structures
+- `POST /api/finalize` — multipart: `sessionId` + `attachments`; stitches + structures; records a job
+- **Resumable upload:** `POST /api/uploads` (init) · `PUT /api/uploads/:id/:index` (chunk) · `GET /api/uploads/:id` (received chunks) · `POST /api/uploads/:id/complete` (assemble + enqueue)
+- **Jobs:** `GET /api/jobs` · `GET /api/jobs/:id` · `PUT /api/jobs/:id/markdown` · `POST /api/jobs/:id/retry` · `GET /api/jobs/:id/download/summary.md` · `GET /api/jobs/:id/download/transcript.txt`
 - `POST /api/send-telegram` — JSON `{ markdown }`
 
 ## Tests
 
-- `node test-phase1.mjs` — Playwright (fake mic, stubbed APIs) covering the recording
-  heartbeat/meter, IndexedDB persistence, and the crash → recover/discard flows.
-  Requires the server running on `:3000`: `PORT=3000 node server.js`.
+Both suites require the server running on `:3000`: `PORT=3000 node server.js`.
+
+- `npm run test:phase1` — Playwright (fake mic, stubbed APIs): recording heartbeat/meter,
+  IndexedDB persistence, crash → recover/discard.
+- `npm run test:phase2` — resumable upload assembly, worker lifecycle, retry, size/gap
+  verification, boot re-scan, and ready-job downloads.
+- `npm test` — runs both.

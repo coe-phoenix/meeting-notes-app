@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const icons = require('./icons');
+const jobs = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -250,6 +251,286 @@ ${rawTranscript}`,
   return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
 }
 
+// ---------- Duration from Soniox tokens (Phase 3 will use full timestamps) ----------
+function tokensDurationMinutes(tokens) {
+  let maxEnd = 0;
+  for (const t of tokens || []) {
+    const end = t.end_ms != null ? t.end_ms
+      : (t.start_ms != null && t.duration_ms != null ? t.start_ms + t.duration_ms : null);
+    if (end != null && end > maxEnd) maxEnd = end;
+  }
+  return maxEnd > 0 ? +(maxEnd / 60000).toFixed(2) : null;
+}
+
+// Transcribe a whole audio file end-to-end, returning rendered text + duration.
+// Soniox artifacts are always cleaned up, success or failure.
+async function transcribeFile(filePath, originalName) {
+  let fileId = null;
+  let transcriptionId = null;
+  try {
+    fileId = await sonioxUploadFile(filePath, originalName || 'recording');
+    transcriptionId = await sonioxCreateTranscription(fileId);
+    await sonioxWaitUntilComplete(transcriptionId);
+    const data = await sonioxFetch(`/v1/transcriptions/${transcriptionId}/transcript`);
+    const text = renderTokens(data.tokens) || data.text || '';
+    return { text, durationMinutes: tokensDurationMinutes(data.tokens) };
+  } finally {
+    sonioxCleanup(transcriptionId, fileId);
+  }
+}
+
+// ---------- Job processing pipeline (Phase 2) ----------
+// Idempotent: always re-runs from the stored audio file, so a retry (or a
+// boot-time re-queue of a stranded job) is safe.
+async function processJob(job) {
+  if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
+  if (!job.audio_path || !fs.existsSync(job.audio_path)) {
+    throw new Error('Audio file for this job is missing');
+  }
+
+  jobs.updateJob(job.id, { status: 'transcribing', error: null });
+  const { text, durationMinutes } = await transcribeFile(job.audio_path, job.original_name);
+  if (!text.trim()) {
+    throw new Error('Transcription returned no speech — check the recording actually has audio');
+  }
+  jobs.updateJob(job.id, {
+    status: 'summarising',
+    raw_transcript: text,
+    duration_minutes: durationMinutes,
+  });
+
+  const markdown = await claudeStructureNotes(text, []);
+  jobs.updateJob(job.id, { status: 'ready', markdown });
+}
+
+// ---------- In-process serial worker ----------
+// One job at a time keeps API usage predictable and avoids hammering Soniox.
+// The queue is just "the oldest job in status=uploaded"; pumpQueue drains it.
+let workerBusy = false;
+function pumpQueue() {
+  if (workerBusy) return;
+  const job = jobs.nextQueuedJob();
+  if (!job) return;
+  workerBusy = true;
+  processJob(job)
+    .then(() => { console.log(`Job ${job.id} ready`); })
+    .catch((err) => {
+      console.error(`Job ${job.id} failed:`, err.message);
+      jobs.updateJob(job.id, { status: 'failed', error: err.message });
+    })
+    .finally(() => {
+      workerBusy = false;
+      setImmediate(pumpQueue); // pick up the next queued job, if any
+    });
+}
+
+// ---------- Resumable chunked upload (Phase 2) ----------
+// A 90-min recording on hotel Wi-Fi dies as a single POST. Split it: the client
+// PUTs fixed-size chunks (resumable/idempotent by index), then asks the server
+// to assemble, verify total size, and enqueue a job.
+const UPLOAD_TMP = path.join(UPLOAD_DIR, 'tmp');
+if (!fs.existsSync(UPLOAD_TMP)) fs.mkdirSync(UPLOAD_TMP, { recursive: true });
+
+function uploadTmpDir(id) {
+  if (typeof id !== 'string' || !/^[a-f0-9-]{8,64}$/i.test(id)) throw new Error('Invalid upload id');
+  return path.join(UPLOAD_TMP, id);
+}
+
+function extFromName(name, mime) {
+  const fromName = name && path.extname(name);
+  if (fromName) return fromName;
+  if (mime && mime.includes('mp4')) return '.m4a';
+  if (mime && mime.includes('ogg')) return '.ogg';
+  if (mime && mime.includes('webm')) return '.webm';
+  if (mime && mime.includes('wav')) return '.wav';
+  if (mime && mime.includes('mpeg')) return '.mp3';
+  return '.audio';
+}
+
+// Init an upload: returns an id the client uses for every chunk PUT.
+app.post('/api/uploads', (req, res) => {
+  try {
+    const { filename, size, mime } = req.body || {};
+    const id = crypto.randomUUID();
+    const dir = uploadTmpDir(id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({
+      filename: filename || 'recording', size: size || null, mime: mime || null,
+    }));
+    res.json({ uploadId: id });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Report which chunk indices the server already has (drives resume-after-failure).
+app.get('/api/uploads/:id', (req, res) => {
+  try {
+    const dir = uploadTmpDir(req.params.id);
+    if (!fs.existsSync(dir)) return res.status(404).json({ error: 'Unknown upload' });
+    const received = fs.readdirSync(dir)
+      .filter((f) => /^\d+\.part$/.test(f))
+      .map((f) => parseInt(f, 10))
+      .sort((a, b) => a - b);
+    res.json({ uploadId: req.params.id, received });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Store one chunk. Raw body; idempotent — re-PUTting an index just overwrites it.
+app.put('/api/uploads/:id/:index',
+  express.raw({ type: '*/*', limit: 25 * 1024 * 1024 }),
+  (req, res) => {
+    try {
+      const dir = uploadTmpDir(req.params.id);
+      if (!fs.existsSync(dir)) return res.status(404).json({ error: 'Unknown upload' });
+      const index = parseInt(req.params.index, 10);
+      if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'Bad chunk index' });
+      if (!req.body || !req.body.length) return res.status(400).json({ error: 'Empty chunk' });
+      fs.writeFileSync(path.join(dir, `${index}.part`), req.body);
+      res.json({ ok: true, index });
+    } catch (err) {
+      console.error(err);
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+// Assemble chunks in order, verify size, create + enqueue a job, drop the parts.
+app.post('/api/uploads/:id/complete', (req, res) => {
+  try {
+    const dir = uploadTmpDir(req.params.id);
+    if (!fs.existsSync(dir)) return res.status(404).json({ error: 'Unknown upload' });
+
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'));
+    const { totalChunks } = req.body || {};
+    const parts = fs.readdirSync(dir)
+      .filter((f) => /^\d+\.part$/.test(f))
+      .map((f) => parseInt(f, 10))
+      .sort((a, b) => a - b);
+
+    if (totalChunks != null && parts.length !== totalChunks) {
+      return res.status(400).json({
+        error: `Missing chunks: have ${parts.length} of ${totalChunks}`,
+        received: parts,
+      });
+    }
+    // Contiguity check: indices must be 0..n-1 with no gaps.
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] !== i) return res.status(400).json({ error: `Chunk gap at index ${i}`, received: parts });
+    }
+
+    const jobId = crypto.randomUUID();
+    const finalPath = path.join(UPLOAD_DIR, `${jobId}${extFromName(meta.filename, meta.mime)}`);
+    const out = fs.openSync(finalPath, 'w');
+    try {
+      for (const i of parts) {
+        fs.writeSync(out, fs.readFileSync(path.join(dir, `${i}.part`)));
+      }
+    } finally {
+      fs.closeSync(out);
+    }
+
+    const size = fs.statSync(finalPath).size;
+    if (meta.size != null && size !== meta.size) {
+      fs.unlinkSync(finalPath);
+      return res.status(400).json({ error: `Size mismatch: assembled ${size}, expected ${meta.size}` });
+    }
+
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    const job = jobs.createJob({
+      id: jobId,
+      original_name: meta.filename,
+      mime: meta.mime,
+      size_bytes: size,
+      source: 'upload',
+      status: 'uploaded',
+      audio_path: finalPath,
+    });
+    setImmediate(pumpQueue);
+    res.json({ jobId: job.id, status: job.status });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---------- Jobs API (Phase 2) ----------
+function publicJob(j, { full = false } = {}) {
+  if (!j) return null;
+  const base = {
+    id: j.id,
+    originalName: j.original_name,
+    status: j.status,
+    error: j.error,
+    durationMinutes: j.duration_minutes,
+    sizeBytes: j.size_bytes,
+    source: j.source,
+    createdAt: j.created_at,
+    updatedAt: j.updated_at,
+    hasAudio: !!(j.audio_path && fs.existsSync(j.audio_path)),
+  };
+  if (full) {
+    base.rawTranscript = j.raw_transcript || '';
+    base.markdown = j.markdown || '';
+  }
+  return base;
+}
+
+app.get('/api/jobs', (req, res) => {
+  res.json({ jobs: jobs.listJobs().map((j) => publicJob(j)) });
+});
+
+app.get('/api/jobs/:id', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Job not found' });
+  res.json({ job: publicJob(j, { full: true }) });
+});
+
+// Persist an edited summary (so downloads / Telegram use the reviewed version).
+app.put('/api/jobs/:id/markdown', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const { markdown } = req.body || {};
+  if (typeof markdown !== 'string') return res.status(400).json({ error: 'markdown must be a string' });
+  jobs.updateJob(j.id, { markdown });
+  res.json({ ok: true });
+});
+
+// Retry a failed job. Idempotent processing means we just re-queue it.
+app.post('/api/jobs/:id/retry', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Job not found' });
+  if (j.status !== 'failed') return res.status(400).json({ error: `Job is '${j.status}', not failed` });
+  jobs.updateJob(j.id, { status: 'uploaded', error: null });
+  setImmediate(pumpQueue);
+  res.json({ ok: true });
+});
+
+function sendDownload(res, filename, mime, body) {
+  res.set('Content-Type', mime);
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(body);
+}
+
+app.get('/api/jobs/:id/download/summary.md', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j || !j.markdown) return res.status(404).json({ error: 'Summary not ready' });
+  const date = new Date(j.created_at).toISOString().slice(0, 10);
+  sendDownload(res, `${date}-meeting-summary.md`, 'text/markdown', j.markdown);
+});
+
+app.get('/api/jobs/:id/download/transcript.txt', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j || !j.raw_transcript) return res.status(404).json({ error: 'Transcript not ready' });
+  const date = new Date(j.created_at).toISOString().slice(0, 10);
+  sendDownload(res, `${date}-transcript-raw.txt`, 'text/plain', j.raw_transcript);
+});
+
 // ---------- Route: process recording + attachments ----------
 app.post(
   '/api/process',
@@ -412,7 +693,24 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
     }));
 
     const markdown = await claudeStructureNotes(rawTranscript, attachments);
-    res.json({ rawTranscript, markdown });
+
+    // Record the finished live session as a job so it appears in history and is
+    // downloadable later — the review flow below is unchanged.
+    let jobId = null;
+    try {
+      const job = jobs.createJob({
+        original_name: `live-${new Date().toISOString().slice(0, 16).replace(':', '')}`,
+        source: 'live',
+        status: 'ready',
+        raw_transcript: rawTranscript,
+        markdown,
+      });
+      jobId = job.id;
+    } catch (e) {
+      console.error('Could not record live job:', e.message);
+    }
+
+    res.json({ rawTranscript, markdown, jobId });
 
     // Purge the internal transcript store only after a successful structure,
     // so a Claude failure leaves the transcript intact for a retry.
@@ -485,9 +783,14 @@ app.use((err, req, res, next) => {
 // Static assets AFTER explicit routes
 app.use(express.static(path.join(__dirname, 'public')));
 
-const server = app.listen(PORT, () =>
-  console.log(`Meeting notes app listening on port ${PORT}`)
-);
+const server = app.listen(PORT, () => {
+  console.log(`Meeting notes app listening on port ${PORT}`);
+  // Survive restarts: re-queue any job stranded mid-run by a crash/pm2 restart,
+  // then start draining the queue.
+  const requeued = jobs.resetStuckJobs();
+  if (requeued) console.log(`Re-queued ${requeued} interrupted job(s) after restart`);
+  setImmediate(pumpQueue);
+});
 // Transcribing a long meeting can exceed Node's 5-minute default request timeout.
 server.requestTimeout = 45 * 60 * 1000;
 server.headersTimeout = 46 * 60 * 1000;

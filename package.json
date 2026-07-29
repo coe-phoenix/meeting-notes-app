@@ -5,10 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test-phase1.mjs"
+    "test": "node test-phase1.mjs && node test-phase2.mjs",
+    "test:phase1": "node test-phase1.mjs",
+    "test:phase2": "node test-phase2.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
+    "better-sqlite3": "^13.0.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1"

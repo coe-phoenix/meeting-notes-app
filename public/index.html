@@ -40,6 +40,22 @@
   .meter > div { height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#e2c455,#e25555); transition:width .08s linear; }
   .timer { font-variant-numeric: tabular-nums; font-weight:600; }
   .warn { color:#e2c455; }
+  nav { display:flex; gap:8px; margin:8px 0 16px; }
+  nav a { color:#c8c8cc; text-decoration:none; font-size:0.9rem; font-weight:600; padding:6px 12px; border-radius:8px; background:#1a1d24; border:1px solid #2a2e37; }
+  nav a.active { background:#5b8def; color:#fff; border-color:#5b8def; }
+  .job-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px; border:1px solid #2a2e37; border-radius:10px; margin-bottom:10px; cursor:pointer; background:#1a1d24; }
+  .job-row:hover { border-color:#3a4050; }
+  .job-row .meta { color:#9a9aa2; font-size:0.8rem; margin-top:2px; }
+  .job-row .name { font-weight:600; word-break:break-word; }
+  .badge { font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em; padding:3px 8px; border-radius:999px; white-space:nowrap; }
+  .badge.uploaded { background:#2a2e37; color:#c8c8cc; }
+  .badge.transcribing, .badge.summarising { background:#3a3410; color:#e2c455; }
+  .badge.ready { background:#123a1a; color:#4caf50; }
+  .badge.failed { background:#3a1212; color:#e25555; }
+  .spinner { display:inline-block; width:12px; height:12px; border:2px solid #444; border-top-color:#e2c455; border-radius:50%; animation: spin .8s linear infinite; vertical-align:-1px; margin-right:6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .muted { color:#9a9aa2; font-size:0.9rem; }
+  a.link { color:#5b8def; cursor:pointer; text-decoration:none; }
 </style>
 </head>
 <body>
@@ -47,6 +63,12 @@
 <h1>Meeting Notes</h1>
 <p class="sub">Record or upload, review, then send to Hermes.</p>
 
+<nav>
+  <a href="#/" id="nav-home">Record / Upload</a>
+  <a href="#/jobs" id="nav-jobs">Jobs</a>
+</nav>
+
+<div id="view-home">
 <div class="card hidden" id="recovery-card">
   <label>Unfinished recording found</label>
   <p class="sub" id="recoveryInfo">A previous recording didn't finish. Its audio was saved on this device.</p>
@@ -65,6 +87,7 @@
   </div>
   <div class="status" id="recStatus"></div>
   <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
+  <button class="btn-primary hidden" id="finishBtn" style="margin-top:12px;">Transcribe &amp; Structure</button>
 
   <label style="margin-top:16px;">Or upload a voice memo (e.g. from iPhone)</label>
   <input type="file" id="audioUpload" accept="audio/*" />
@@ -86,6 +109,51 @@
     <button class="btn-primary" id="sendBtn">Send to Telegram</button>
   </div>
   <div class="status" id="sendStatus"></div>
+</div>
+</div><!-- /view-home -->
+
+<div id="view-jobs" class="hidden">
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <label style="margin:0;">Recordings</label>
+      <a class="link" id="jobsRefresh">Refresh</a>
+    </div>
+    <div id="jobsList" style="margin-top:12px;"><p class="muted">Loading…</p></div>
+  </div>
+</div>
+
+<div id="view-job" class="hidden">
+  <a class="link" href="#/jobs">&larr; Back to jobs</a>
+  <div class="card" style="margin-top:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+      <div>
+        <div class="name" id="jobName" style="font-weight:600;">—</div>
+        <div class="meta muted" id="jobMeta"></div>
+      </div>
+      <span class="badge" id="jobBadge">—</span>
+    </div>
+    <div class="status" id="jobProgress"></div>
+    <div class="status warn" id="jobError"></div>
+    <div class="btn-row hidden" id="jobRetryRow">
+      <button class="btn-secondary" id="jobRetryBtn">Retry</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="jobReadyCard">
+    <label>Raw transcript (read-only)</label>
+    <textarea id="jobRaw" readonly style="min-height:120px; color:#9a9aa2;"></textarea>
+    <label style="margin-top:16px;">Summary — review & edit</label>
+    <textarea id="jobMarkdown"></textarea>
+    <div class="btn-row">
+      <button class="btn-secondary" id="jobSaveBtn">Save edits</button>
+      <button class="btn-primary" id="jobSendBtn">Send to Telegram</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-secondary" id="jobDlSummary">Download summary.md</button>
+      <button class="btn-secondary" id="jobDlTranscript">Download transcript.txt</button>
+    </div>
+    <div class="status" id="jobActionStatus"></div>
+  </div>
 </div>
 
 <script>
@@ -132,6 +200,7 @@ const downloadBtn = document.getElementById('downloadBtn');
 const rawTranscriptBox = document.getElementById('rawTranscript');
 const levelMeter = document.getElementById('levelMeter');
 const levelBar = document.getElementById('levelBar');
+const finishBtn = document.getElementById('finishBtn');
 const recoveryCard = document.getElementById('recovery-card');
 const recoveryInfo = document.getElementById('recoveryInfo');
 const recoveryStatus = document.getElementById('recoveryStatus');
@@ -361,8 +430,10 @@ function handleSegmentStop() {
     startSegment();
     scheduleRotation();
   } else {
-    // User pressed Stop: once every segment is in, structure the full transcript.
-    finalizeSession();
+    // User pressed Stop: the audio is captured, but structuring (a paid Claude
+    // call) waits for an explicit "Transcribe & Structure" click.
+    finishBtn.classList.remove('hidden');
+    recStatus.textContent = 'Recording captured. Click "Transcribe & Structure" when ready.';
   }
 }
 
@@ -438,6 +509,7 @@ recordBtn.onclick = async () => {
   refreshProcessBtn();
   reviewCard.classList.add('hidden');
   recoveryCard.classList.add('hidden');
+  finishBtn.classList.add('hidden');
   processStatus.textContent = '';
 
   acquireWakeLock(); // best-effort; must not delay showing the UI or capturing
@@ -461,10 +533,26 @@ stopBtn.onclick = () => {
   releaseWakeLock();
   recordBtn.classList.remove('hidden');
   stopBtn.classList.add('hidden');
-  recStatus.textContent = 'Recording stopped — transcribing the final segment…';
-  // Flushing the last segment triggers handleSegmentStop, which finalizes.
+  recStatus.textContent = 'Recording stopped — finishing the last segment…';
+  // Flushing the last segment triggers handleSegmentStop, which now reveals the
+  // "Transcribe & Structure" button instead of auto-finalizing.
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
+};
+
+// Live recording: structuring only runs when the user explicitly asks for it.
+finishBtn.onclick = async () => {
+  finishBtn.disabled = true;
+  const original = finishBtn.textContent;
+  finishBtn.textContent = 'Transcribing…';
+  try {
+    await finalizeSession();
+  } finally {
+    finishBtn.disabled = false;
+    finishBtn.textContent = original;
+    // Hide it once we've produced a reviewable record; keep it on error to retry.
+    if (!reviewCard.classList.contains('hidden')) finishBtn.classList.add('hidden');
+  }
 };
 
 audioUpload.onchange = () => {
@@ -475,27 +563,65 @@ audioUpload.onchange = () => {
   }
 };
 
+// Resumable chunked upload: split the file, PUT each chunk (retrying failures),
+// then ask the server to assemble + enqueue a job. This survives flaky Wi-Fi far
+// better than a single multi-hundred-MB POST, and lets you close the tab after.
+const UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024; // 5MB
+
+async function putChunkWithRetry(uploadId, index, chunk, tries = 4) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(`/api/uploads/${uploadId}/${index}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: chunk,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `chunk ${index} failed`);
+      return;
+    } catch (err) {
+      if (attempt >= tries) throw err;
+      await new Promise((r) => setTimeout(r, 500 * attempt)); // backoff, then retry
+    }
+  }
+}
+
+async function uploadFileAsJob(file) {
+  const initRes = await fetch('/api/uploads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: file.name, size: file.size, mime: file.type }),
+  });
+  const initData = await initRes.json();
+  if (!initRes.ok) throw new Error(initData.error || 'Could not start upload');
+  const uploadId = initData.uploadId;
+
+  const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
+  for (let i = 0; i < total; i++) {
+    const chunk = file.slice(i * UPLOAD_CHUNK_BYTES, (i + 1) * UPLOAD_CHUNK_BYTES);
+    processStatus.textContent = `Uploading… chunk ${i + 1} of ${total}`;
+    await putChunkWithRetry(uploadId, i, chunk);
+  }
+
+  const doneRes = await fetch(`/api/uploads/${uploadId}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ totalChunks: total }),
+  });
+  const doneData = await doneRes.json();
+  if (!doneRes.ok) throw new Error(doneData.error || 'Upload assembly failed');
+  return doneData.jobId;
+}
+
 processBtn.onclick = async () => {
+  if (!uploadedAudioFile) return;
   processBtn.disabled = true;
-  processStatus.textContent = 'Uploading & transcribing… a long meeting can take several minutes.';
-
-  const formData = new FormData();
-  if (uploadedAudioFile) {
-    formData.append('audio', uploadedAudioFile, uploadedAudioFile.name);
-  }
-  for (const f of attachmentUpload.files) {
-    formData.append('attachments', f, f.name);
-  }
-
   try {
-    const res = await fetch('/api/process', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Processing failed');
-
-    markdownOutput.value = data.markdown;
-    rawTranscriptBox.value = data.rawTranscript || '';
-    reviewCard.classList.remove('hidden');
-    processStatus.textContent = 'Done. Review and edit below before sending.';
+    const jobId = await uploadFileAsJob(uploadedAudioFile);
+    processStatus.textContent = 'Queued. You can close the app — it keeps processing.';
+    uploadedAudioFile = null;
+    audioUpload.value = '';
+    refreshProcessBtn();
+    location.hash = `#/jobs/${jobId}`; // jump to the job detail to watch progress
   } catch (err) {
     processStatus.textContent = 'Error: ' + err.message;
   } finally {
@@ -626,6 +752,201 @@ discardBtn.onclick = async () => {
 };
 
 checkForRecovery();
+
+// ---------- Jobs UI + hash router (Phase 2) ----------
+const views = {
+  home: document.getElementById('view-home'),
+  jobs: document.getElementById('view-jobs'),
+  job: document.getElementById('view-job'),
+};
+const navHome = document.getElementById('nav-home');
+const navJobs = document.getElementById('nav-jobs');
+const ACTIVE = new Set(['uploaded', 'transcribing', 'summarising']);
+let jobPollTimer = null, jobsPollTimer = null, currentJobId = null;
+
+function showView(name) {
+  for (const k in views) views[k].classList.toggle('hidden', k !== name);
+  navHome.classList.toggle('active', name === 'home');
+  navJobs.classList.toggle('active', name === 'jobs' || name === 'job');
+}
+function stopJobPoll() { if (jobPollTimer) { clearInterval(jobPollTimer); jobPollTimer = null; } }
+function stopJobsPoll() { if (jobsPollTimer) { clearInterval(jobsPollTimer); jobsPollTimer = null; } }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function fmtDate(ms) { return new Date(ms).toLocaleString(); }
+function fmtDuration(min) {
+  if (min == null) return '';
+  const m = Math.floor(min), s = Math.round((min - m) * 60);
+  return `${m}m${s ? ' ' + s + 's' : ''}`;
+}
+function fmtSize(b) { return b == null ? '' : (b / 1048576).toFixed(1) + ' MB'; }
+
+async function renderJobsList() {
+  const el = document.getElementById('jobsList');
+  try {
+    const res = await fetch('/api/jobs');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load jobs');
+    if (!data.jobs.length) {
+      el.innerHTML = '<p class="muted">No recordings yet. Record or upload one to get started.</p>';
+      stopJobsPoll();
+      return;
+    }
+    el.innerHTML = data.jobs.map((j) => `
+      <div class="job-row" data-id="${j.id}">
+        <div>
+          <div class="name">${escapeHtml(j.originalName || j.id)}</div>
+          <div class="meta">${fmtDate(j.createdAt)}${j.durationMinutes != null ? ' · ' + fmtDuration(j.durationMinutes) : ''}${j.source === 'live' ? ' · live' : ''}</div>
+        </div>
+        <span class="badge ${j.status}">${j.status}</span>
+      </div>`).join('');
+    el.querySelectorAll('.job-row').forEach((row) => {
+      row.onclick = () => { location.hash = `#/jobs/${row.dataset.id}`; };
+    });
+    const anyActive = data.jobs.some((j) => ACTIVE.has(j.status));
+    if (anyActive && !jobsPollTimer) jobsPollTimer = setInterval(renderJobsList, 3000);
+    if (!anyActive) stopJobsPoll();
+  } catch (e) {
+    el.innerHTML = `<p class="warn">${escapeHtml(e.message)}</p>`;
+    stopJobsPoll();
+  }
+}
+
+async function renderJobDetail(id) {
+  currentJobId = id;
+  const badge = document.getElementById('jobBadge');
+  const progress = document.getElementById('jobProgress');
+  const errorEl = document.getElementById('jobError');
+  const retryRow = document.getElementById('jobRetryRow');
+  const readyCard = document.getElementById('jobReadyCard');
+  try {
+    const res = await fetch(`/api/jobs/${id}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Job not found');
+    const j = data.job;
+    document.getElementById('jobName').textContent = j.originalName || j.id;
+    document.getElementById('jobMeta').textContent =
+      [fmtDate(j.createdAt), fmtDuration(j.durationMinutes), fmtSize(j.sizeBytes), j.source].filter(Boolean).join(' · ');
+    badge.className = 'badge ' + j.status;
+    badge.textContent = j.status;
+    errorEl.textContent = '';
+    retryRow.classList.add('hidden');
+    readyCard.classList.add('hidden');
+
+    if (ACTIVE.has(j.status)) {
+      const label = j.status === 'uploaded' ? 'Queued…' : j.status === 'transcribing' ? 'Transcribing…' : 'Summarising…';
+      progress.innerHTML = `<span class="spinner"></span>${label}`;
+      if (!jobPollTimer) jobPollTimer = setInterval(() => renderJobDetail(id), 3000);
+    } else if (j.status === 'failed') {
+      progress.textContent = '';
+      errorEl.textContent = 'Failed: ' + (j.error || 'unknown error');
+      retryRow.classList.remove('hidden');
+      stopJobPoll();
+    } else if (j.status === 'ready') {
+      progress.textContent = '';
+      stopJobPoll();
+      document.getElementById('jobRaw').value = j.rawTranscript || '';
+      document.getElementById('jobMarkdown').value = j.markdown || '';
+      readyCard.classList.remove('hidden');
+    }
+  } catch (e) {
+    progress.textContent = '';
+    errorEl.textContent = e.message;
+    stopJobPoll();
+  }
+}
+
+document.getElementById('jobsRefresh').onclick = renderJobsList;
+
+document.getElementById('jobRetryBtn').onclick = async () => {
+  const btn = document.getElementById('jobRetryBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}/retry`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Retry failed');
+    renderJobDetail(currentJobId);
+  } catch (e) {
+    document.getElementById('jobError').textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById('jobSaveBtn').onclick = async () => {
+  const status = document.getElementById('jobActionStatus');
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}/markdown`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ markdown: document.getElementById('jobMarkdown').value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    status.textContent = 'Saved ✓';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  }
+};
+
+document.getElementById('jobSendBtn').onclick = async () => {
+  const status = document.getElementById('jobActionStatus');
+  status.textContent = 'Sending to Telegram…';
+  try {
+    const res = await fetch('/api/send-telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ markdown: document.getElementById('jobMarkdown').value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Send failed');
+    status.textContent = 'Sent ✓';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  }
+};
+
+async function downloadJobFile(kind) {
+  const status = document.getElementById('jobActionStatus');
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}/download/${kind}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Not ready');
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const name = (/filename="(.+?)"/.exec(cd) || [])[1] || kind;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+document.getElementById('jobDlSummary').onclick = () => downloadJobFile('summary.md');
+document.getElementById('jobDlTranscript').onclick = () => downloadJobFile('transcript.txt');
+
+function router() {
+  stopJobPoll();
+  stopJobsPoll();
+  const hash = location.hash || '#/';
+  const m = hash.match(/^#\/jobs\/(.+)$/);
+  if (m) {
+    showView('job');
+    renderJobDetail(decodeURIComponent(m[1]));
+  } else if (hash === '#/jobs') {
+    showView('jobs');
+    renderJobsList();
+  } else {
+    showView('home');
+  }
+}
+window.addEventListener('hashchange', router);
+router();
 </script>
 </body>
 </html>
