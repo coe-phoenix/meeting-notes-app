@@ -123,7 +123,7 @@ Prompt rules alone drift. Make non-interpretation testable.
 - [x] Log eval results per prompt version so regressions are visible *(`eval/run-eval.mjs` appends to `eval/results.jsonl` tagged with `SUMMARY_PROMPT_VERSION` + `FAITHFULNESS_PROMPT_VERSION`)*
 
 ### Definition of done
-- [~] Faithfulness check passes 100% on eval set; any future prompt change re-proves it *(harness + gate built and self-tested via probe summaries; the actual 100%-on-eval run needs `ANTHROPIC_API_KEY` — run `npm run eval` to prove it)*
+- [x] Faithfulness check passes 100% on eval set; any future prompt change re-proves it *(`npm run eval` passed 2026-07-29: budget-meeting 4/4 grounded, mic-test 3/3 grounded, and both invented-claim probes correctly flagged; baseline in `eval/results.jsonl`. Rerun on any prompt change.)*
 
 ---
 
@@ -132,7 +132,7 @@ Prompt rules alone drift. Make non-interpretation testable.
 Last, because everything above is testable single-user.
 
 ### Auth (thin as possible)
-- [ ] Magic-link or email-OTP login (no passwords to store or forget)
+- [ ] Magic-link or email-OTP login (no passwords to store or forget) - use resend, i have subscribed to resend.
 - [ ] Session management; each job tied to user_id
 - [ ] Replace shared APP_PASSWORD with per-user auth
 
