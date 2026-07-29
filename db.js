@@ -26,6 +26,7 @@ db.exec(`
     duration_minutes REAL,
     audio_path       TEXT,
     raw_transcript   TEXT,
+    cleaned_transcript TEXT,
     markdown         TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
@@ -33,6 +34,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);
 `);
+
+// Lightweight migrations: add columns introduced after a DB was first created.
+// (CREATE TABLE IF NOT EXISTS won't alter an existing table.)
+function ensureColumn(name, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(jobs)`).all().map((c) => c.name);
+  if (!cols.includes(name)) db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${ddl}`);
+}
+ensureColumn('cleaned_transcript', 'TEXT');
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -42,14 +51,15 @@ const STUCK = ['transcribing', 'summarising'];
 const stmts = {
   insert: db.prepare(`
     INSERT INTO jobs (id, user_id, original_name, mime, size_bytes, source, status,
-                      duration_minutes, audio_path, raw_transcript, markdown, created_at, updated_at)
+                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, created_at, updated_at)
     VALUES (@id, @user_id, @original_name, @mime, @size_bytes, @source, @status,
-            @duration_minutes, @audio_path, @raw_transcript, @markdown, @created_at, @updated_at)
+            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @created_at, @updated_at)
   `),
   get: db.prepare(`SELECT * FROM jobs WHERE id = ?`),
   listAll: db.prepare(`SELECT * FROM jobs ORDER BY created_at DESC`),
   listByUser: db.prepare(`SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC`),
   nextQueued: db.prepare(`SELECT * FROM jobs WHERE status = 'uploaded' ORDER BY created_at ASC LIMIT 1`),
+  olderThan: db.prepare(`SELECT * FROM jobs WHERE created_at < ?`),
   del: db.prepare(`DELETE FROM jobs WHERE id = ?`),
 };
 
@@ -67,6 +77,7 @@ function createJob(fields) {
     duration_minutes: fields.duration_minutes != null ? fields.duration_minutes : null,
     audio_path: fields.audio_path || null,
     raw_transcript: fields.raw_transcript || null,
+    cleaned_transcript: fields.cleaned_transcript || null,
     markdown: fields.markdown || null,
     created_at: now(),
     updated_at: now(),
@@ -90,7 +101,7 @@ function nextQueuedJob() {
 // Partial update by whitelisted columns; always bumps updated_at.
 const UPDATABLE = new Set([
   'status', 'error', 'duration_minutes', 'audio_path',
-  'raw_transcript', 'markdown', 'original_name', 'mime', 'size_bytes',
+  'raw_transcript', 'cleaned_transcript', 'markdown', 'original_name', 'mime', 'size_bytes',
 ]);
 function updateJob(id, patch) {
   const keys = Object.keys(patch).filter((k) => UPDATABLE.has(k));
@@ -103,6 +114,11 @@ function updateJob(id, patch) {
 
 function deleteJob(id) {
   return stmts.del.run(id);
+}
+
+// Jobs created before the given cutoff timestamp (for retention sweeps).
+function jobsOlderThan(cutoffMs) {
+  return stmts.olderThan.all(cutoffMs);
 }
 
 // On boot, any job left mid-flight (transcribing/summarising) was interrupted by
@@ -126,5 +142,6 @@ module.exports = {
   nextQueuedJob,
   updateJob,
   deleteJob,
+  jobsOlderThan,
   resetStuckJobs,
 };

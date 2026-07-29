@@ -153,6 +153,54 @@ async function run() {
     db.deleteJob(ready.id);
   }
 
+  // ---------- Test 5b: Phase 3 layers, audio + zip downloads, manual delete ----------
+  {
+    const fs = require('fs');
+    const path = require('path');
+    // Seed a ready job with all three layers and a real audio file on disk.
+    const audioPath = path.join(process.cwd(), 'uploads', `test-p3-${Date.now()}.webm`);
+    fs.writeFileSync(audioPath, Buffer.from('fake-webm-audio-bytes'));
+    const ready = db.createJob({
+      original_name: 'seeded-p3',
+      source: 'live',
+      status: 'ready',
+      raw_transcript: 'Speaker 0 [00:00]: raw layer text',
+      cleaned_transcript: 'Speaker 0 [00:00]: cleaned layer text [UNCLEAR]',
+      markdown: '# Seeded summary\n- point one [00:00]',
+      audio_path: audioPath,
+    });
+
+    const detail = await (await fetch(`${BASE}/api/jobs/${ready.id}`)).json();
+    ok('detail exposes cleaned layer + hasCleaned + expiresAt',
+      detail.job.cleanedTranscript.includes('cleaned layer') &&
+      detail.job.hasCleaned === true && detail.job.hasAudio === true &&
+      typeof detail.job.expiresAt === 'number');
+
+    const clRes = await fetch(`${BASE}/api/jobs/${ready.id}/download/transcript-cleaned.txt`);
+    const clText = await clRes.text();
+    ok('cleaned transcript downloads with content', clRes.ok && clText.includes('[UNCLEAR]'));
+    ok('cleaned transcript has self-describing filename',
+      /filename=".*transcript-cleaned\.txt"/.test(clRes.headers.get('content-disposition') || ''));
+
+    const auRes = await fetch(`${BASE}/api/jobs/${ready.id}/download/audio`);
+    const auBuf = Buffer.from(await auRes.arrayBuffer());
+    ok('original audio downloads bit-exact', auRes.ok && auBuf.toString() === 'fake-webm-audio-bytes');
+    ok('audio has self-describing filename',
+      /filename=".*meeting-audio\.webm"/.test(auRes.headers.get('content-disposition') || ''));
+
+    const zipRes = await fetch(`${BASE}/api/jobs/${ready.id}/download/all.zip`);
+    const zipBuf = Buffer.from(await zipRes.arrayBuffer());
+    ok('all.zip downloads as a zip',
+      zipRes.ok && zipRes.headers.get('content-type') === 'application/zip' &&
+      zipBuf.length > 0 && zipBuf.slice(0, 2).toString() === 'PK');
+
+    const delRes = await fetch(`${BASE}/api/jobs/${ready.id}`, { method: 'DELETE' });
+    ok('manual delete succeeds', delRes.ok);
+    const gone = await fetch(`${BASE}/api/jobs/${ready.id}`);
+    ok('deleted job is gone (404)', gone.status === 404);
+    ok('deleted job audio file removed from disk', !fs.existsSync(audioPath));
+  }
+
   // ---------- Test 6: jobs list endpoint ----------
   {
     const res = await fetch(`${BASE}/api/jobs`);

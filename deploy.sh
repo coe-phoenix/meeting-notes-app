@@ -27,6 +27,20 @@ else
   git diff --name-only "$OLD_HASH" "$NEW_HASH" | sed 's/^/    /'
 fi
 
+# ffmpeg is required to concatenate live-recording segments into one file and to
+# produce the mp3 convenience download (Phase 3). Uploads still work without it,
+# so a failed install warns rather than aborting the whole deploy.
+echo "==> Ensuring ffmpeg is installed (Phase 3: audio concat + mp3 downloads)"
+if command -v ffmpeg >/dev/null 2>&1; then
+  echo "    ffmpeg present: $(ffmpeg -version | head -1)"
+elif command -v apt-get >/dev/null 2>&1; then
+  echo "    ffmpeg missing — installing via apt-get"
+  sudo apt-get update -y && sudo apt-get install -y ffmpeg \
+    || echo "    WARNING: automatic ffmpeg install failed. Install manually: sudo apt-get install -y ffmpeg"
+else
+  echo "    WARNING: ffmpeg missing and apt-get not found. Install ffmpeg for this distro manually."
+fi
+
 # Always install: it's fast and idempotent when nothing changed, and it
 # guarantees native deps (e.g. better-sqlite3) are present. Skipping this on a
 # stale/re-fetched commit was how a missing module crash-looped a deploy before.

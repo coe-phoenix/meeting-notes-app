@@ -4,9 +4,15 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const os = require('os');
 const Anthropic = require('@anthropic-ai/sdk');
+const archiver = require('archiver');
 const icons = require('./icons');
 const jobs = require('./db');
+
+const execFileP = promisify(execFile);
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -21,6 +27,11 @@ const APP_PASSWORD = process.env.APP_PASSWORD;
 const SEGMENT_MINUTES = parseFloat(process.env.SEGMENT_MINUTES) > 0
   ? parseFloat(process.env.SEGMENT_MINUTES)
   : 5;
+// Auto-delete jobs (and their audio) this many days after creation. Surfaced in
+// the UI so the retention window is a visible trust feature, not a surprise.
+const RETENTION_DAYS = parseFloat(process.env.RETENTION_DAYS) > 0
+  ? parseFloat(process.env.RETENTION_DAYS)
+  : 30;
 
 const SONIOX_BASE = 'https://api.soniox.com';
 const SONIOX_MODEL = 'stt-async-v5';
@@ -152,7 +163,21 @@ async function sonioxWaitUntilComplete(transcriptionId, maxWaitMs = 30 * 60 * 10
   throw new Error('Soniox transcription timed out');
 }
 
+// Format a millisecond offset as mm:ss (or h:mm:ss past an hour).
+function fmtTimestamp(ms) {
+  if (ms == null || !isFinite(ms)) return '00:00';
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(h > 0 ? m : m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 // The REST /transcript endpoint returns `tokens`, not a flat `text` field.
+// Each speaker turn is prefixed with a [mm:ss] timestamp so the transcript is
+// self-verifying and the summary can cite back into the audio (Phase 3).
 function renderTokens(tokens) {
   const parts = [];
   let currentSpeaker = null;
@@ -161,12 +186,14 @@ function renderTokens(tokens) {
   for (const token of tokens || []) {
     let text = token.text;
     const { speaker, language } = token;
+    const startMs = token.start_ms != null ? token.start_ms : null;
 
     if (speaker !== undefined && speaker !== null && speaker !== currentSpeaker) {
       if (currentSpeaker !== null) parts.push('\n\n');
       currentSpeaker = speaker;
       currentLanguage = null;
-      parts.push(`Speaker ${currentSpeaker}:`);
+      const ts = startMs != null ? ` [${fmtTimestamp(startMs)}]` : '';
+      parts.push(`Speaker ${currentSpeaker}${ts}:`);
     }
     if (language !== undefined && language !== null && language !== currentLanguage) {
       currentLanguage = language;
@@ -197,19 +224,52 @@ async function sonioxCleanup(transcriptionId, fileId) {
   }
 }
 
-// ---------- Claude: clean up transcript + attachments into markdown ----------
-async function claudeStructureNotes(rawTranscript, attachments) {
+// ---------- Claude pass 1: produce the CLEANED transcript layer ----------
+// Corrects STT errors in place but removes nothing — every utterance stays, so
+// the cleaned layer remains a faithful transcript, not a summary. The raw layer
+// is never touched; this output is stored separately as `cleaned_transcript`.
+async function claudeCleanTranscript(rawTranscript) {
+  const msg = await anthropic.messages.create({
+    model: 'claude-sonnet-5',
+    // Generous ceiling: the cleaned transcript is roughly as long as the input.
+    // Very long meetings could still hit this; that's an accepted limitation.
+    max_tokens: 16000,
+    messages: [
+      {
+        role: 'user',
+        content: `You are cleaning a raw speech-to-text transcript from a Malaysian business meeting. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese, sometimes within a single sentence. It is machine-generated and contains errors, especially on proper nouns, company names, and code-switched phrases. Speaker labels, [language] tags and [mm:ss] timestamps were added by the transcription engine.
+
+Your task — clean, do not summarise:
+1. Fix obvious transcription errors using context, especially proper nouns and code-switched phrases.
+2. Remove NOTHING. Every utterance must remain — this is still a full transcript, not a summary. Do not condense, reorder, or drop filler.
+3. Preserve the original language mix. Do not translate; keep phrases in the language spoken.
+4. Keep the structure exactly: the \`Speaker N [mm:ss]:\` turn markers and \`[language]\` tags stay where they are.
+5. Where a word or phrase is garbled and you cannot recover it confidently, replace only that span with [UNCLEAR] — never guess a name or number.
+
+Output only the cleaned transcript, with the same structure and no preamble or commentary.
+
+Raw transcript:
+${rawTranscript}`,
+      },
+    ],
+  });
+  return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+}
+
+// ---------- Claude pass 2: structure the cleaned transcript into markdown ----------
+// Receives the CLEANED transcript (falls back to raw if cleaning was skipped) so
+// the summary is built on the best available text.
+async function claudeStructureNotes(transcript, attachments) {
   const today = new Date().toISOString().slice(0, 10);
 
   const content = [
     {
       type: 'text',
-      text: `You are cleaning up a raw speech-to-text transcript from a Malaysian business meeting. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese, sometimes within a single sentence. The transcript is machine-generated and will contain errors, especially on proper nouns, company names, and code-switched phrases. Speaker labels and [language] tags were added by the transcription engine and may themselves be wrong.
+      text: `You are turning a cleaned speech-to-text transcript from a Malaysian business meeting into a structured record. The speech mixes English, Bahasa Melayu, Mandarin and Cantonese. The transcript is annotated with [language] tags and, at each speaker turn, an [mm:ss] timestamp marking where in the audio that turn begins.
 
 Your task:
-1. Correct obvious transcription errors using context. Where a term is garbled and you cannot infer it confidently, mark it [UNCLEAR] rather than guessing.
-2. Preserve the original language mix. Do not translate everything into English; keep phrases in the language they were said, adding a short English gloss in brackets only where it aids comprehension.
-3. Output a markdown meeting record using exactly this template:
+1. Preserve the original language mix in any quoted phrasing — do not translate everything into English; add a short English gloss in brackets only where it aids comprehension.
+2. Output a markdown meeting record using exactly this template:
 
 ### ${today} — <Meeting type> (<attendees>)
 - Context:
@@ -221,10 +281,12 @@ Your task:
 
 Rules for the template: use ${today} as the date unless the transcript clearly states another date. If meeting type, attendees, or any field is not evident from the material, write [NOT STATED] — never invent names, numbers, or commitments. If attached images or PDFs contain relevant context (whiteboard notes, a deck, a business card), fold that into the appropriate field.
 
+Timestamp citations (self-verifying summary): for every field you fill in, append the [mm:ss] reference(s) to the moment(s) in the transcript that support it, e.g. \`- Agreed next step: send proposal by Friday [12:34]\`. Use only [mm:ss] values that actually appear in the transcript — never invent one. Omit the citation on any field marked [NOT STATED].
+
 Output only the markdown record, with no preamble.
 
-Raw transcript:
-${rawTranscript}`,
+Transcript:
+${transcript}`,
     },
   ];
 
@@ -279,9 +341,62 @@ async function transcribeFile(filePath, originalName) {
   }
 }
 
-// ---------- Job processing pipeline (Phase 2) ----------
+// ---------- ffmpeg helpers (Phase 3) ----------
+// Concatenate same-codec segment files into one. Segments come from a single
+// MediaRecorder session so they share codec/container; the concat demuxer with
+// stream copy is lossless and fast. Falls back to a re-encode if copy fails
+// (e.g. a truncated final segment left behind by a crash).
+async function ffmpegConcat(segmentPaths, outPath) {
+  const listFile = path.join(os.tmpdir(), `concat-${crypto.randomUUID()}.txt`);
+  const list = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+  fs.writeFileSync(listFile, list);
+  const ext = path.extname(outPath).toLowerCase();
+  const reencodeCodec = ext === '.m4a' || ext === '.mp4' ? 'aac' : 'libopus';
+  try {
+    try {
+      await execFileP('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outPath]);
+    } catch (e) {
+      console.warn('ffmpeg concat copy failed, re-encoding:', e.message);
+      await execFileP('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:a', reencodeCodec, outPath]);
+    }
+  } finally {
+    try { fs.unlinkSync(listFile); } catch { /* ignore */ }
+  }
+  return outPath;
+}
+
+// Transcode any audio file to a compatibility mp3 (the convenience download).
+async function ffmpegToMp3(inPath, outPath) {
+  await execFileP('ffmpeg', ['-y', '-i', inPath, '-vn', '-acodec', 'libmp3lame', '-q:a', '4', outPath]);
+  return outPath;
+}
+
+// ---------- Per-job attachment store (images/PDFs folded into the summary) ----------
+// Queued jobs process asynchronously, so attachments captured at finalize time
+// are stashed on disk beside the job and read back when the worker runs.
+function jobAttachmentsDir(jobId) {
+  if (typeof jobId !== 'string' || !/^[a-f0-9-]{8,64}$/i.test(jobId)) throw new Error('Invalid job id');
+  return path.join(UPLOAD_DIR, `${jobId}-attachments`);
+}
+
+function readJobAttachments(jobId) {
+  let dir;
+  try { dir = jobAttachmentsDir(jobId); } catch { return []; }
+  if (!fs.existsSync(dir)) return [];
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')); }
+  catch { return []; }
+  return meta.map((m) => ({
+    mimetype: m.mimetype,
+    base64: fs.readFileSync(path.join(dir, m.file)).toString('base64'),
+  }));
+}
+
+// ---------- Job processing pipeline (Phase 2 + Phase 3 layers) ----------
 // Idempotent: always re-runs from the stored audio file, so a retry (or a
-// boot-time re-queue of a stranded job) is safe.
+// boot-time re-queue of a stranded job) is safe. Produces the three layers in
+// order — raw (from Soniox), cleaned (Claude pass 1), summary (Claude pass 2) —
+// and never overwrites the raw layer.
 async function processJob(job) {
   if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
   if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
@@ -294,13 +409,26 @@ async function processJob(job) {
   if (!text.trim()) {
     throw new Error('Transcription returned no speech — check the recording actually has audio');
   }
+  // Raw layer: stored once and never overwritten from here on.
   jobs.updateJob(job.id, {
     status: 'summarising',
     raw_transcript: text,
     duration_minutes: durationMinutes,
   });
 
-  const markdown = await claudeStructureNotes(text, []);
+  // Cleaned layer: STT-error-corrected but nothing removed. If cleaning fails we
+  // fall back to summarising the raw layer rather than failing the whole job.
+  let cleaned = '';
+  try {
+    cleaned = await claudeCleanTranscript(text);
+    if (cleaned) jobs.updateJob(job.id, { cleaned_transcript: cleaned });
+  } catch (e) {
+    console.error(`Job ${job.id} transcript-clean pass failed, using raw:`, e.message);
+  }
+
+  // Summary layer: built from the cleaned transcript (or raw if cleaning failed).
+  const attachments = readJobAttachments(job.id);
+  const markdown = await claudeStructureNotes(cleaned || text, attachments);
   jobs.updateJob(job.id, { status: 'ready', markdown });
 }
 
@@ -459,7 +587,9 @@ app.post('/api/uploads/:id/complete', (req, res) => {
   }
 });
 
-// ---------- Jobs API (Phase 2) ----------
+// ---------- Jobs API (Phase 2 + Phase 3) ----------
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
 function publicJob(j, { full = false } = {}) {
   if (!j) return null;
   const base = {
@@ -473,9 +603,13 @@ function publicJob(j, { full = false } = {}) {
     createdAt: j.created_at,
     updatedAt: j.updated_at,
     hasAudio: !!(j.audio_path && fs.existsSync(j.audio_path)),
+    hasCleaned: !!j.cleaned_transcript,
+    // When this job (and its files) will be auto-deleted by the retention sweep.
+    expiresAt: j.created_at + RETENTION_MS,
   };
   if (full) {
     base.rawTranscript = j.raw_transcript || '';
+    base.cleanedTranscript = j.cleaned_transcript || '';
     base.markdown = j.markdown || '';
   }
   return base;
@@ -511,24 +645,117 @@ app.post('/api/jobs/:id/retry', (req, res) => {
   res.json({ ok: true });
 });
 
+// Remove a job and everything it owns on disk (audio, cached mp3, attachments).
+function deleteJobFiles(j) {
+  const targets = [];
+  if (j.audio_path) targets.push(j.audio_path);
+  targets.push(mp3PathFor(j)); // cached convenience copy, if any
+  for (const p of targets) {
+    try { if (p && fs.existsSync(p)) fs.unlinkSync(p); }
+    catch (e) { console.error('File delete failed:', e.message); }
+  }
+  try {
+    const adir = jobAttachmentsDir(j.id);
+    if (fs.existsSync(adir)) fs.rmSync(adir, { recursive: true, force: true });
+  } catch (e) { console.error('Attachment delete failed:', e.message); }
+}
+
+// Manual "delete now" — the per-job counterpart to the retention sweep.
+app.delete('/api/jobs/:id', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Job not found' });
+  deleteJobFiles(j);
+  jobs.deleteJob(j.id);
+  res.json({ ok: true });
+});
+
 function sendDownload(res, filename, mime, body) {
   res.set('Content-Type', mime);
   res.set('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(body);
 }
 
+function jobDate(j) { return new Date(j.created_at).toISOString().slice(0, 10); }
+
+// Cached-mp3 path for a job. If the original already IS mp3, that file is used
+// directly and no cache copy is produced.
+function mp3PathFor(j) { return path.join(UPLOAD_DIR, `${j.id}.mp3`); }
+async function ensureMp3(j) {
+  if (!j.audio_path || !fs.existsSync(j.audio_path)) throw new Error('Audio not available');
+  if (path.extname(j.audio_path).toLowerCase() === '.mp3') return j.audio_path;
+  const out = mp3PathFor(j);
+  if (!fs.existsSync(out)) await ffmpegToMp3(j.audio_path, out);
+  return out;
+}
+
 app.get('/api/jobs/:id/download/summary.md', (req, res) => {
   const j = jobs.getJob(req.params.id);
   if (!j || !j.markdown) return res.status(404).json({ error: 'Summary not ready' });
-  const date = new Date(j.created_at).toISOString().slice(0, 10);
-  sendDownload(res, `${date}-meeting-summary.md`, 'text/markdown', j.markdown);
+  sendDownload(res, `${jobDate(j)}-meeting-summary.md`, 'text/markdown', j.markdown);
 });
 
+// Raw layer: exactly what the engine heard (speaker + language + [mm:ss] tags).
 app.get('/api/jobs/:id/download/transcript.txt', (req, res) => {
   const j = jobs.getJob(req.params.id);
   if (!j || !j.raw_transcript) return res.status(404).json({ error: 'Transcript not ready' });
-  const date = new Date(j.created_at).toISOString().slice(0, 10);
-  sendDownload(res, `${date}-transcript-raw.txt`, 'text/plain', j.raw_transcript);
+  sendDownload(res, `${jobDate(j)}-transcript-raw.txt`, 'text/plain', j.raw_transcript);
+});
+
+// Cleaned layer: STT errors fixed, nothing removed, [UNCLEAR] markers preserved.
+app.get('/api/jobs/:id/download/transcript-cleaned.txt', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j || !j.cleaned_transcript) return res.status(404).json({ error: 'Cleaned transcript not available' });
+  sendDownload(res, `${jobDate(j)}-transcript-cleaned.txt`, 'text/plain', j.cleaned_transcript);
+});
+
+// Bit-exact original audio (true raw). For uploads this is the file as sent; for
+// live recordings it's the losslessly-concatenated recording.
+app.get('/api/jobs/:id/download/audio', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j || !j.audio_path || !fs.existsSync(j.audio_path)) {
+    return res.status(404).json({ error: 'Audio not available' });
+  }
+  res.download(j.audio_path, `${jobDate(j)}-meeting-audio${path.extname(j.audio_path)}`);
+});
+
+// mp3 convenience copy (transcoded once, then cached beside the job).
+app.get('/api/jobs/:id/download/audio.mp3', async (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j || !j.audio_path || !fs.existsSync(j.audio_path)) {
+    return res.status(404).json({ error: 'Audio not available' });
+  }
+  try {
+    const mp3 = await ensureMp3(j);
+    res.download(mp3, `${jobDate(j)}-meeting-audio.mp3`);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Could not produce mp3: ' + e.message });
+  }
+});
+
+// "Download all" — one zip with summary + both transcripts + the original audio.
+app.get('/api/jobs/:id/download/all.zip', (req, res) => {
+  const j = jobs.getJob(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Job not found' });
+  const date = jobDate(j);
+  res.set('Content-Type', 'application/zip');
+  res.set('Content-Disposition', `attachment; filename="${date}-meeting-bundle.zip"`);
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.on('error', (err) => {
+    console.error('Zip error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.destroy();
+  });
+  archive.pipe(res);
+
+  if (j.markdown) archive.append(j.markdown, { name: `${date}-meeting-summary.md` });
+  if (j.raw_transcript) archive.append(j.raw_transcript, { name: `${date}-transcript-raw.txt` });
+  if (j.cleaned_transcript) archive.append(j.cleaned_transcript, { name: `${date}-transcript-cleaned.txt` });
+  if (j.audio_path && fs.existsSync(j.audio_path)) {
+    archive.file(j.audio_path, { name: `${date}-meeting-audio${path.extname(j.audio_path)}` });
+  }
+  archive.finalize();
 });
 
 // ---------- Route: process recording + attachments ----------
@@ -585,7 +812,11 @@ app.post(
 // Client-readable runtime config (behind the auth gate). Lets the UI pick up the
 // segment interval from .env without hardcoding it.
 app.get('/api/config', (req, res) => {
-  res.json({ segmentMinutes: SEGMENT_MINUTES, segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000) });
+  res.json({
+    segmentMinutes: SEGMENT_MINUTES,
+    segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000),
+    retentionDays: RETENTION_DAYS,
+  });
 });
 
 // ---------- Live-recording session routes (segment pipeline) ----------
@@ -623,99 +854,96 @@ app.post('/api/session/resume', (req, res) => {
   }
 });
 
-// Transcribe a single segment and append its raw text to the session store.
-app.post('/api/transcribe-chunk', upload.single('audio'), async (req, res) => {
-  let sonioxFileId = null;
-  let transcriptionId = null;
-  let tempPath = null;
-
+// Store a single recording segment's AUDIO (no per-segment transcription).
+// Phase 3 accuracy fix: transcribing isolated ~5-min segments lost cross-segment
+// context and cut code-switched sentences. We now keep only the audio here and
+// transcribe the whole recording in ONE Soniox pass at finalize. Index-named
+// files keep segments in order and make re-uploads (crash recovery) idempotent.
+app.post('/api/transcribe-chunk', upload.single('audio'), (req, res) => {
   try {
-    if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
-
     const dir = sessionDir(req.body.sessionId);
-    if (!fs.existsSync(dir)) throw new Error('Unknown or expired session');
+    if (!fs.existsSync(dir)) return res.status(400).json({ error: 'Unknown or expired session' });
 
     const segment = req.file;
     if (!segment) return res.status(400).json({ error: 'No audio segment provided' });
-    tempPath = segment.path;
 
-    sonioxFileId = await sonioxUploadFile(segment.path, segment.originalname || 'segment');
-    transcriptionId = await sonioxCreateTranscription(sonioxFileId);
-    await sonioxWaitUntilComplete(transcriptionId);
-    const rawText = await sonioxGetTranscript(transcriptionId);
-
-    // Index-named files keep segments in order regardless of which transcription
-    // finishes first, and avoid concurrent-append races.
     const index = String(Math.max(0, parseInt(req.body.index, 10) || 0)).padStart(6, '0');
-    fs.writeFileSync(path.join(dir, `${index}.txt`), rawText);
+    const ext = extFromName(segment.originalname, segment.mimetype);
+    // Move the multer temp file into the session store (same filesystem).
+    fs.renameSync(segment.path, path.join(dir, `${index}${ext}`));
 
-    res.json({ ok: true, text: rawText });
+    res.json({ ok: true, index: parseInt(index, 10) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    if (tempPath) {
-      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); }
-      catch (e) { console.error('Segment temp cleanup failed:', e.message); }
+    if (req.file && req.file.path) {
+      try { if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch { /* ignore */ }
     }
-    sonioxCleanup(transcriptionId, sonioxFileId);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Finalize: stitch the stored segments together and structure with Claude.
+// Finalize: ffmpeg-concat the stored segments into ONE recording and enqueue a
+// single job. Transcription/cleaning/summarising happen asynchronously in the
+// worker (same pipeline as an upload), so the client just navigates to the job.
 app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }]), async (req, res) => {
   const tempPaths = [];
   let dir = null;
 
   try {
-    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
-
     dir = sessionDir(req.body.sessionId);
     if (!fs.existsSync(dir)) throw new Error('Unknown or expired session');
 
-    const rawTranscript = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith('.txt'))
-      .sort()
-      .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))
-      .join('\n\n')
-      .trim();
-
-    if (!rawTranscript) {
-      throw new Error('No transcript captured for this session — check the recording had audio');
+    // Segment audio files are index-named (000000.<ext>); .txt files (if any
+    // survived from an older build) are ignored.
+    const segments = fs.readdirSync(dir)
+      .filter((f) => /^\d{6}\.[a-z0-9]+$/i.test(f))
+      .sort();
+    if (!segments.length) {
+      throw new Error('No audio captured for this session — check the recording had audio');
     }
 
+    const ext = path.extname(segments[0]) || '.webm';
+    const segPaths = segments.map((f) => path.join(dir, f));
+    const jobId = crypto.randomUUID();
+    const finalPath = path.join(UPLOAD_DIR, `${jobId}${ext}`);
+
+    if (segPaths.length === 1) {
+      fs.copyFileSync(segPaths[0], finalPath);
+    } else {
+      await ffmpegConcat(segPaths, finalPath);
+    }
+    const size = fs.statSync(finalPath).size;
+
+    // Persist attachments beside the job for the worker to fold into the summary.
     const attachmentFiles = (req.files && req.files.attachments) || [];
     attachmentFiles.forEach((f) => tempPaths.push(f.path));
-    const attachments = attachmentFiles.map((f) => ({
-      mimetype: f.mimetype,
-      base64: fs.readFileSync(f.path).toString('base64'),
-    }));
-
-    const markdown = await claudeStructureNotes(rawTranscript, attachments);
-
-    // Record the finished live session as a job so it appears in history and is
-    // downloadable later — the review flow below is unchanged.
-    let jobId = null;
-    try {
-      const job = jobs.createJob({
-        original_name: `live-${new Date().toISOString().slice(0, 16).replace(':', '')}`,
-        source: 'live',
-        status: 'ready',
-        raw_transcript: rawTranscript,
-        markdown,
+    if (attachmentFiles.length) {
+      const adir = jobAttachmentsDir(jobId);
+      fs.mkdirSync(adir, { recursive: true });
+      const meta = attachmentFiles.map((f, i) => {
+        const file = `${i}${path.extname(f.originalname) || ''}`;
+        fs.copyFileSync(f.path, path.join(adir, file));
+        return { file, mimetype: f.mimetype };
       });
-      jobId = job.id;
-    } catch (e) {
-      console.error('Could not record live job:', e.message);
+      fs.writeFileSync(path.join(adir, 'meta.json'), JSON.stringify(meta));
     }
 
-    res.json({ rawTranscript, markdown, jobId });
+    const job = jobs.createJob({
+      id: jobId,
+      original_name: `live-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`,
+      mime: `audio/${ext.slice(1)}`,
+      size_bytes: size,
+      source: 'live',
+      status: 'uploaded',
+      audio_path: finalPath,
+    });
 
-    // Purge the internal transcript store only after a successful structure,
-    // so a Claude failure leaves the transcript intact for a retry.
+    // Session audio is now assembled into the job; drop the segment store.
     try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); }
     catch (e) { console.error('Session cleanup failed:', e.message); }
+
+    setImmediate(pumpQueue);
+    res.json({ jobId: job.id, status: job.status });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -783,6 +1011,27 @@ app.use((err, req, res, next) => {
 // Static assets AFTER explicit routes
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ---------- Retention sweep (Phase 3) ----------
+// Auto-delete jobs and their files RETENTION_DAYS after creation. Runs on boot
+// and periodically; the window is a visible trust feature (surfaced in the UI),
+// not a silent surprise. Manual "delete now" is the per-job counterpart above.
+function sweepRetention() {
+  try {
+    const cutoff = Date.now() - RETENTION_MS;
+    const stale = jobs.jobsOlderThan(cutoff);
+    for (const j of stale) {
+      deleteJobFiles(j);
+      jobs.deleteJob(j.id);
+    }
+    if (stale.length) {
+      console.log(`Retention sweep: deleted ${stale.length} job(s) older than ${RETENTION_DAYS} day(s)`);
+    }
+  } catch (e) {
+    console.error('Retention sweep failed:', e.message);
+  }
+}
+const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
+
 const server = app.listen(PORT, () => {
   console.log(`Meeting notes app listening on port ${PORT}`);
   // Survive restarts: re-queue any job stranded mid-run by a crash/pm2 restart,
@@ -790,6 +1039,9 @@ const server = app.listen(PORT, () => {
   const requeued = jobs.resetStuckJobs();
   if (requeued) console.log(`Re-queued ${requeued} interrupted job(s) after restart`);
   setImmediate(pumpQueue);
+  // Retention: sweep once on boot, then on a fixed interval.
+  sweepRetention();
+  setInterval(sweepRetention, RETENTION_SWEEP_INTERVAL_MS);
 });
 // Transcribing a long meeting can exceed Node's 5-minute default request timeout.
 server.requestTimeout = 45 * 60 * 1000;

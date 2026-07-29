@@ -137,20 +137,40 @@
     <div class="btn-row hidden" id="jobRetryRow">
       <button class="btn-secondary" id="jobRetryBtn">Retry</button>
     </div>
+    <div class="btn-row">
+      <button class="btn-danger" id="jobDeleteBtn">Delete now</button>
+    </div>
+    <div class="status muted" id="jobRetention"></div>
   </div>
 
   <div class="card hidden" id="jobReadyCard">
-    <label>Raw transcript (read-only)</label>
+    <label>Raw transcript (read-only — exactly what the engine heard)</label>
     <textarea id="jobRaw" readonly style="min-height:120px; color:#9a9aa2;"></textarea>
+
+    <div id="jobCleanedWrap" class="hidden">
+      <label style="margin-top:16px;">Cleaned transcript (read-only — errors fixed, nothing removed)</label>
+      <textarea id="jobCleaned" readonly style="min-height:120px; color:#9a9aa2;"></textarea>
+    </div>
+
     <label style="margin-top:16px;">Summary — review & edit</label>
     <textarea id="jobMarkdown"></textarea>
     <div class="btn-row">
       <button class="btn-secondary" id="jobSaveBtn">Save edits</button>
       <button class="btn-primary" id="jobSendBtn">Send to Telegram</button>
     </div>
+
+    <label style="margin-top:16px;">Downloads</label>
     <div class="btn-row">
-      <button class="btn-secondary" id="jobDlSummary">Download summary.md</button>
-      <button class="btn-secondary" id="jobDlTranscript">Download transcript.txt</button>
+      <button class="btn-secondary" id="jobDlSummary">Summary .md</button>
+      <button class="btn-secondary" id="jobDlRaw">Raw .txt</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-secondary" id="jobDlCleaned">Cleaned .txt</button>
+      <button class="btn-secondary" id="jobDlAudio">Audio (original)</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-secondary" id="jobDlMp3">Audio .mp3</button>
+      <button class="btn-primary" id="jobDlAll">Download all (.zip)</button>
     </div>
     <div class="status" id="jobActionStatus"></div>
   </div>
@@ -283,7 +303,7 @@ function fmtElapsed() {
 
 function tickRecStatus() {
   recStatus.innerHTML = `<span class="rec-dot"></span> Recording… <span class="timer">${fmtElapsed()}</span>`
-    + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) transcribed` : '');
+    + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) saved` : '');
 }
 
 // ---------- Live audio level meter (proof the mic is alive) ----------
@@ -446,9 +466,9 @@ async function uploadSegment(blob, name, index) {
   try {
     const res = await fetch('/api/transcribe-chunk', { method: 'POST', body: fd });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Segment transcription failed');
+    if (!res.ok) throw new Error(data.error || 'Segment upload failed');
     segmentsTranscribed++;
-    // Transcript is safe server-side now; this segment's local audio can go.
+    // Segment audio is safe server-side now; this segment's local copy can go.
     idbDeleteSegment(sid, index).catch(() => {});
     // recStatus is owned by the heartbeat timer while recording; leave it be.
   } catch (err) {
@@ -460,10 +480,11 @@ async function uploadSegment(blob, name, index) {
 async function finalizeSession() {
   if (!sessionId) return;
   const sid = sessionId;
-  processStatus.textContent = 'Finishing transcription of the last segment…';
+  const status = recovering ? recoveryStatus : processStatus;
+  status.textContent = 'Uploading the last segment…';
   await Promise.allSettled(pendingUploads);
 
-  processStatus.textContent = 'Structuring notes with Claude…';
+  status.textContent = 'Assembling the recording and queuing…';
   const fd = new FormData();
   fd.append('sessionId', sessionId);
   for (const f of attachmentUpload.files) fd.append('attachments', f, f.name);
@@ -472,14 +493,14 @@ async function finalizeSession() {
     const res = await fetch('/api/finalize', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Finalize failed');
-    markdownOutput.value = data.markdown;
-    rawTranscriptBox.value = data.rawTranscript || '';
-    reviewCard.classList.remove('hidden');
-    processStatus.textContent = 'Done. Review and edit below before sending.';
-    // Everything is server-side/rendered now; drop this session's local audio.
+    // The whole recording is now one queued job that transcribes in a single
+    // Soniox pass (accuracy fix). Local audio is safe to drop; jump to the job.
     idbDeleteSession(sid).catch(() => {});
+    status.textContent = 'Queued. You can close the app — it keeps processing.';
+    sessionId = null;
+    if (data.jobId) location.hash = `#/jobs/${data.jobId}`;
   } catch (err) {
-    processStatus.textContent = 'Error: ' + err.message;
+    status.textContent = 'Error: ' + err.message;
   } finally {
     sessionId = null;
   }
@@ -834,6 +855,13 @@ async function renderJobDetail(id) {
     errorEl.textContent = '';
     retryRow.classList.add('hidden');
     readyCard.classList.add('hidden');
+    document.getElementById('jobDeleteBtn').disabled = false;
+
+    // Retention window (a visible trust feature, not a surprise deletion).
+    const retentionEl = document.getElementById('jobRetention');
+    retentionEl.textContent = j.expiresAt
+      ? `Files auto-delete on ${new Date(j.expiresAt).toLocaleDateString()}.`
+      : '';
 
     if (ACTIVE.has(j.status)) {
       const label = j.status === 'uploaded' ? 'Queued…' : j.status === 'transcribing' ? 'Transcribing…' : 'Summarising…';
@@ -849,6 +877,18 @@ async function renderJobDetail(id) {
       stopJobPoll();
       document.getElementById('jobRaw').value = j.rawTranscript || '';
       document.getElementById('jobMarkdown').value = j.markdown || '';
+      // Cleaned layer only appears when a cleaning pass produced one.
+      const cleanedWrap = document.getElementById('jobCleanedWrap');
+      if (j.cleanedTranscript) {
+        document.getElementById('jobCleaned').value = j.cleanedTranscript;
+        cleanedWrap.classList.remove('hidden');
+      } else {
+        cleanedWrap.classList.add('hidden');
+      }
+      document.getElementById('jobDlCleaned').disabled = !j.cleanedTranscript;
+      // Audio downloads depend on the source file still being on disk.
+      document.getElementById('jobDlAudio').disabled = !j.hasAudio;
+      document.getElementById('jobDlMp3').disabled = !j.hasAudio;
       readyCard.classList.remove('hidden');
     }
   } catch (e) {
@@ -927,8 +967,39 @@ async function downloadJobFile(kind) {
     status.textContent = 'Error: ' + e.message;
   }
 }
+// Text layers: fetch + blob (small, and surfaces "not ready" errors nicely).
 document.getElementById('jobDlSummary').onclick = () => downloadJobFile('summary.md');
-document.getElementById('jobDlTranscript').onclick = () => downloadJobFile('transcript.txt');
+document.getElementById('jobDlRaw').onclick = () => downloadJobFile('transcript.txt');
+document.getElementById('jobDlCleaned').onclick = () => downloadJobFile('transcript-cleaned.txt');
+
+// Audio / zip can be large: stream via a direct link instead of buffering a
+// blob in memory. Same-origin, so the Basic-auth credentials ride along.
+function directDownload(kind) {
+  const a = document.createElement('a');
+  a.href = `/api/jobs/${currentJobId}/download/${kind}`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+document.getElementById('jobDlAudio').onclick = () => directDownload('audio');
+document.getElementById('jobDlMp3').onclick = () => directDownload('audio.mp3');
+document.getElementById('jobDlAll').onclick = () => directDownload('all.zip');
+
+document.getElementById('jobDeleteBtn').onclick = async () => {
+  if (!confirm('Delete this recording and all its files (audio, transcripts, summary)? This cannot be undone.')) return;
+  const btn = document.getElementById('jobDeleteBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Delete failed');
+    location.hash = '#/jobs';
+  } catch (e) {
+    document.getElementById('jobError').textContent = e.message;
+    btn.disabled = false;
+  }
+};
 
 function router() {
   stopJobPoll();

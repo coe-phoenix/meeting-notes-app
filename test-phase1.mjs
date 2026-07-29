@@ -21,10 +21,20 @@ async function newPage(browser, { chunkFails = false } = {}) {
     r.fulfill({ json: { sessionId: 'testsessionaaaa1111', existed: false } }));
   await page.route('**/api/transcribe-chunk', async (r) => {
     if (chunkFails) return r.fulfill({ status: 500, json: { error: 'stub failure' } });
-    return r.fulfill({ json: { ok: true, text: 'stub transcript' } });
+    return r.fulfill({ json: { ok: true, index: 0 } });
   });
+  // Phase 3: finalize now enqueues ONE job and returns its id; the client
+  // navigates to the job detail (which polls /api/jobs/:id) instead of showing
+  // an inline review card.
   await page.route('**/api/finalize', (r) =>
-    r.fulfill({ json: { rawTranscript: 'stub raw transcript', markdown: '# Stub summary' } }));
+    r.fulfill({ json: { jobId: 'jobstubaaaa11112222', status: 'uploaded' } }));
+  await page.route('**/api/jobs/jobstubaaaa11112222', (r) =>
+    r.fulfill({ json: { job: {
+      id: 'jobstubaaaa11112222', status: 'ready', originalName: 'live-stub', source: 'live',
+      createdAt: Date.now(), updatedAt: Date.now(), expiresAt: Date.now() + 30 * 86400000,
+      hasAudio: true, hasCleaned: false, rawTranscript: 'stub raw transcript',
+      cleanedTranscript: '', markdown: '# Stub summary',
+    } } }));
 
   page.on('console', (m) => { if (m.type() === 'error') console.log('  [browser error]', m.text()); });
   return { context, page };
@@ -56,12 +66,13 @@ async function run() {
     await page.click('#stopBtn');
     // Stop no longer auto-finalizes: the user must click Transcribe & Structure.
     await page.waitForSelector('#finishBtn:not(.hidden)', { timeout: 8000 });
-    ok('review card hidden until Transcribe clicked', !(await page.isVisible('#review-card')));
-    await page.click('#finishBtn');
-    await page.waitForSelector('#review-card:not(.hidden)', { timeout: 8000 });
-    ok('review card appears after Transcribe clicked', await page.isVisible('#review-card'));
-    ok('markdown populated from finalize', (await page.inputValue('#markdownOutput')).includes('Stub summary'));
+    ok('Transcribe & Structure button shown after stop', await page.isVisible('#finishBtn'));
     ok('meter hidden after stop', !(await page.isVisible('#levelMeter')));
+    await page.click('#finishBtn');
+    // Phase 3: finalize enqueues a job and navigates to its detail view.
+    await page.waitForSelector('#view-job:not(.hidden)', { timeout: 8000 });
+    ok('navigates to job detail after Transcribe clicked', /#\/jobs\//.test(page.url()));
+    ok('job summary rendered from detail', (await page.inputValue('#jobMarkdown')).includes('Stub summary'));
 
     await sleep(300);
     ok('IndexedDB empty after successful finalize', (await idbCount(page)) === 0);
@@ -86,8 +97,14 @@ async function run() {
     const page2 = await context.newPage();
     await page2.route('**/api/config', (r) => r.fulfill({ json: { segmentMinutes: 0.02, segmentMs: 1200 } }));
     await page2.route('**/api/session/resume', (r) => r.fulfill({ json: { sessionId: 'testsessionaaaa1111', existed: false } }));
-    await page2.route('**/api/transcribe-chunk', (r) => r.fulfill({ json: { ok: true, text: 'stub transcript' } }));
-    await page2.route('**/api/finalize', (r) => r.fulfill({ json: { rawTranscript: 'stub raw transcript', markdown: '# Recovered summary' } }));
+    await page2.route('**/api/transcribe-chunk', (r) => r.fulfill({ json: { ok: true, index: 0 } }));
+    await page2.route('**/api/finalize', (r) => r.fulfill({ json: { jobId: 'jobrecoveredaaaa1111', status: 'uploaded' } }));
+    await page2.route('**/api/jobs/jobrecoveredaaaa1111', (r) => r.fulfill({ json: { job: {
+      id: 'jobrecoveredaaaa1111', status: 'ready', originalName: 'live-recovered', source: 'live',
+      createdAt: Date.now(), updatedAt: Date.now(), expiresAt: Date.now() + 30 * 86400000,
+      hasAudio: true, hasCleaned: false, rawTranscript: 'stub raw transcript',
+      cleanedTranscript: '', markdown: '# Recovered summary',
+    } } }));
     page2.on('console', (m) => { if (m.type() === 'error') console.log('  [browser error]', m.text()); });
 
     await page2.goto(BASE);
@@ -96,13 +113,14 @@ async function run() {
     const info = await page2.textContent('#recoveryInfo');
     ok('recovery info reports saved segments', /segment\(s\)/.test(info));
 
-    // Recover: uploads now succeed, finalize returns.
+    // Recover: segment audio re-uploads succeed, finalize enqueues a job and the
+    // client navigates to its detail view.
     await page2.click('#recoverBtn');
-    await page2.waitForSelector('#review-card:not(.hidden)', { timeout: 10000 });
-    ok('recovery produces a finalized record', (await page2.inputValue('#markdownOutput')).includes('Recovered summary'));
+    await page2.waitForSelector('#view-job:not(.hidden)', { timeout: 10000 });
+    ok('recovery produces a queued job (navigates to detail)', /#\/jobs\//.test(page2.url()));
+    ok('recovered job summary rendered', (await page2.inputValue('#jobMarkdown')).includes('Recovered summary'));
     await sleep(300);
     ok('IndexedDB cleared after successful recovery', (await idbCount(page2)) === 0);
-    ok('recovery card hidden after recovery', !(await page2.isVisible('#recovery-card')));
     await context.close();
   }
 
