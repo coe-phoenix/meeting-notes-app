@@ -29,6 +29,7 @@ db.exec(`
     cleaned_transcript TEXT,
     markdown         TEXT,
     faithfulness     TEXT,
+    stt_provider     TEXT NOT NULL DEFAULT 'soniox',
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
   );
@@ -79,6 +80,7 @@ function ensureColumn(name, ddl) {
 }
 ensureColumn('cleaned_transcript', 'TEXT');
 ensureColumn('faithfulness', 'TEXT'); // JSON: Phase 4 faithfulness-audit result
+ensureColumn('stt_provider', "TEXT NOT NULL DEFAULT 'soniox'"); // 'soniox' | 'gemini'
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -88,9 +90,9 @@ const STUCK = ['transcribing', 'summarising'];
 const stmts = {
   insert: db.prepare(`
     INSERT INTO jobs (id, user_id, original_name, mime, size_bytes, source, status,
-                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, faithfulness, created_at, updated_at)
+                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, faithfulness, stt_provider, created_at, updated_at)
     VALUES (@id, @user_id, @original_name, @mime, @size_bytes, @source, @status,
-            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @faithfulness, @created_at, @updated_at)
+            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @faithfulness, @stt_provider, @created_at, @updated_at)
   `),
   get: db.prepare(`SELECT * FROM jobs WHERE id = ?`),
   listAll: db.prepare(`SELECT * FROM jobs ORDER BY created_at DESC`),
@@ -117,6 +119,7 @@ function createJob(fields) {
     cleaned_transcript: fields.cleaned_transcript || null,
     markdown: fields.markdown || null,
     faithfulness: fields.faithfulness || null,
+    stt_provider: fields.stt_provider || 'soniox',
     created_at: now(),
     updated_at: now(),
   };

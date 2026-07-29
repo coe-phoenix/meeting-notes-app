@@ -204,6 +204,42 @@ async function run() {
     ok('deleted job audio file removed from disk', !fs.existsSync(audioPath));
   }
 
+  // ---------- Test 5c: transcription-model selection (masked model1/model2) ----------
+  {
+    const cfg = await (await fetch(`${BASE}/api/config`)).json();
+    ok('config exposes masked models', Array.isArray(cfg.models)
+      && cfg.models.some((m) => m.id === 'model1') && cfg.models.some((m) => m.id === 'model2'));
+    ok('config reports a default model', typeof cfg.defaultModel === 'string');
+
+    // A job stored with the Gemini provider surfaces as masked "model2".
+    const gemJob = db.createJob({ source: 'upload', status: 'ready', markdown: 'g', stt_provider: 'gemini' });
+    const gd = await (await fetch(`${BASE}/api/jobs/${gemJob.id}`)).json();
+    ok('gemini job is masked as model2', gd.job.model === 'model2');
+    db.deleteJob(gemJob.id);
+
+    // Default (no provider) surfaces as model1.
+    const sonJob = db.createJob({ source: 'upload', status: 'ready', markdown: 's' });
+    const sd = await (await fetch(`${BASE}/api/jobs/${sonJob.id}`)).json();
+    ok('default job is masked as model1', sd.job.model === 'model1');
+    db.deleteJob(sonJob.id);
+
+    // Upload-init carries the model choice through to the created job.
+    const initRes = await fetch(`${BASE}/api/uploads`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: 'm.webm', size: 5, mime: 'audio/webm', model: 'model2' }),
+    });
+    const { uploadId } = await initRes.json();
+    await fetch(`${BASE}/api/uploads/${uploadId}/0`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.from('audio'),
+    });
+    const done = await (await fetch(`${BASE}/api/uploads/${uploadId}/complete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalChunks: 1 }),
+    })).json();
+    const created = db.getJob(done.jobId);
+    ok('upload carries model2 -> gemini provider', created && created.stt_provider === 'gemini');
+    db.deleteJob(done.jobId);
+  }
+
   // ---------- Test 6: jobs list endpoint ----------
   {
     const res = await fetch(`${BASE}/api/jobs`);

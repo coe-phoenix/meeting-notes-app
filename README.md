@@ -26,8 +26,16 @@ npm start
 - `.env` is git-ignored — never commit real API keys
 - **`APP_PASSWORD` is important**: if unset, anyone with the server IP can use the app,
   burn API credits, and post into your Telegram channel
-- Soniox model: `stt-async-v5` (async file transcription, auto language-mixing,
-  speaker diarization and language identification enabled)
+- **Transcription providers** (masked in the UI as **Model 1** / **Model 2**):
+  - **Model 1 — Soniox** (`stt-async-v5`): async file transcription, auto
+    language-mixing, speaker diarization + language identification.
+  - **Model 2 — Gemini** (`GEMINI_MODEL`, default `gemini-2.5-flash`): the audio is
+    transcoded to mp3 and sent via the Gemini Files API, prompted to emit the same
+    `Speaker N [mm:ss]:` shape so the rest of the pipeline is provider-agnostic.
+  - A per-recording toggle picks the model; it only appears when **both** keys are
+    configured. The chosen model is stored per job (`stt_provider`) and shown on the
+    job detail. Duration (for quotas) falls back to `ffprobe` when a provider
+    doesn't report it.
 - Claude model: `claude-sonnet-5`
 - Soniox files/transcriptions are deleted after each run so they don't accumulate
 
@@ -139,7 +147,7 @@ per-user accounts:
 
 - `GET /` — the UI
 - `GET /healthz` — reports which credentials are configured
-- `GET /api/config` — client runtime config (segment length, retention days)
+- `GET /api/config` — client runtime config (segment length, retention days, available transcription models)
 - `POST /api/process` — multipart: `audio` (1 file), `attachments` (up to 10)  *(legacy single-shot path)*
 - `POST /api/session/start` — mint a live-recording session id
 - `POST /api/session/resume` — JSON `{ sessionId }`; recreate a session dir during crash recovery

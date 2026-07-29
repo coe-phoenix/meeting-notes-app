@@ -13,6 +13,7 @@ const icons = require('./icons');
 const jobs = require('./db');
 const prompts = require('./prompts');
 const auth = require('./auth');
+const gemini = require('./gemini');
 
 const execFileP = promisify(execFile);
 
@@ -45,6 +46,24 @@ const SONIOX_BASE = 'https://api.soniox.com';
 const SONIOX_MODEL = 'stt-async-v5';
 // Cantonese has no ISO code in Soniox's supported list; 'zh' covers Chinese.
 const LANGUAGE_HINTS = ['en', 'ms', 'zh'];
+
+// Second transcription provider. Model name is configurable so it can track
+// Gemini's current audio-capable models without a code change.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// The UI masks providers as "Model 1" / "Model 2". Keep the mapping server-side.
+const MODEL_TO_PROVIDER = { model1: 'soniox', model2: 'gemini' };
+const PROVIDER_TO_MODEL = { soniox: 'model1', gemini: 'model2' };
+function providerAvailable(p) {
+  return p === 'soniox' ? !!SONIOX_API_KEY : p === 'gemini' ? !!GEMINI_API_KEY : false;
+}
+// Accepts a masked model id ('model1'/'model2'), a raw provider, or nothing.
+function resolveProvider(model) {
+  if (MODEL_TO_PROVIDER[model]) return MODEL_TO_PROVIDER[model];
+  if (model === 'soniox' || model === 'gemini') return model;
+  return 'soniox';
+}
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
@@ -286,9 +305,40 @@ function tokensDurationMinutes(tokens) {
   return maxEnd > 0 ? +(maxEnd / 60000).toFixed(2) : null;
 }
 
+// Audio duration via ffprobe — the provider-agnostic fallback for quota/usage
+// (Soniox derives it from tokens; Gemini doesn't report it).
+async function ffprobeDurationMinutes(filePath) {
+  try {
+    const { stdout } = await execFileP('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=nokey=1:noprint_wrappers=1', filePath,
+    ]);
+    const secs = parseFloat(String(stdout).trim());
+    return isFinite(secs) && secs > 0 ? +(secs / 60).toFixed(2) : null;
+  } catch (e) {
+    console.error('ffprobe duration failed:', e.message);
+    return null;
+  }
+}
+
 // Transcribe a whole audio file end-to-end, returning rendered text + duration.
-// Soniox artifacts are always cleaned up, success or failure.
-async function transcribeFile(filePath, originalName) {
+// `provider` selects the engine ('soniox' default, or 'gemini'). Both return the
+// same rendered shape so the rest of the pipeline doesn't care which ran.
+async function transcribeFile(filePath, originalName, provider = 'soniox') {
+  if (provider === 'gemini') {
+    // Gemini's supported audio formats don't reliably include webm/m4a, so
+    // transcode to mp3 first (ffmpeg is already a hard dependency).
+    const tmpMp3 = path.join(UPLOAD_DIR, `gem-${crypto.randomUUID()}.mp3`);
+    try {
+      await ffmpegToMp3(filePath, tmpMp3);
+      const text = await gemini.transcribeAudio(tmpMp3, 'audio/mp3', { apiKey: GEMINI_API_KEY, model: GEMINI_MODEL });
+      return { text, durationMinutes: await ffprobeDurationMinutes(filePath) };
+    } finally {
+      try { if (fs.existsSync(tmpMp3)) fs.unlinkSync(tmpMp3); } catch { /* ignore */ }
+    }
+  }
+
+  // Default: Soniox. Artifacts are always cleaned up, success or failure.
   let fileId = null;
   let transcriptionId = null;
   try {
@@ -360,14 +410,20 @@ function readJobAttachments(jobId) {
 // order — raw (from Soniox), cleaned (Claude pass 1), summary (Claude pass 2) —
 // and never overwrites the raw layer.
 async function processJob(job) {
-  if (!SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
+  const provider = job.stt_provider || 'soniox';
+  if (provider === 'soniox' && !SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
+  if (provider === 'gemini' && !GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
   if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
   if (!job.audio_path || !fs.existsSync(job.audio_path)) {
     throw new Error('Audio file for this job is missing');
   }
 
   jobs.updateJob(job.id, { status: 'transcribing', error: null });
-  const { text, durationMinutes } = await transcribeFile(job.audio_path, job.original_name);
+  const result = await transcribeFile(job.audio_path, job.original_name, provider);
+  const text = result.text;
+  // Fall back to ffprobe when the provider didn't report a duration (quota/usage).
+  let durationMinutes = result.durationMinutes;
+  if (durationMinutes == null) durationMinutes = await ffprobeDurationMinutes(job.audio_path);
   if (!text.trim()) {
     throw new Error('Transcription returned no speech — check the recording actually has audio');
   }
@@ -461,12 +517,13 @@ function extFromName(name, mime) {
 app.post('/api/uploads', (req, res) => {
   try {
     if (blockedByQuota(req, res)) return;
-    const { filename, size, mime } = req.body || {};
+    const { filename, size, mime, model } = req.body || {};
     const id = crypto.randomUUID();
     const dir = uploadTmpDir(id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({
       filename: filename || 'recording', size: size || null, mime: mime || null,
+      provider: resolveProvider(model),
     }));
     res.json({ uploadId: id });
   } catch (err) {
@@ -561,6 +618,7 @@ app.post('/api/uploads/:id/complete', (req, res) => {
       source: 'upload',
       status: 'uploaded',
       audio_path: finalPath,
+      stt_provider: resolveProvider(meta.provider),
     });
     setImmediate(pumpQueue);
     res.json({ jobId: job.id, status: job.status });
@@ -592,6 +650,8 @@ function publicJob(j, { full = false } = {}) {
     updatedAt: j.updated_at,
     hasAudio: !!(j.audio_path && fs.existsSync(j.audio_path)),
     hasCleaned: !!j.cleaned_transcript,
+    // Masked transcription model used ('model1'/'model2').
+    model: PROVIDER_TO_MODEL[j.stt_provider] || 'model1',
     // When this job (and its files) will be auto-deleted by the retention sweep.
     expiresAt: j.created_at + RETENTION_MS,
   };
@@ -861,10 +921,19 @@ app.post(
 // Client-readable runtime config (behind the auth gate). Lets the UI pick up the
 // segment interval from .env without hardcoding it.
 app.get('/api/config', (req, res) => {
+  // Transcription models are masked ("Model 1"/"Model 2"); expose which are
+  // actually configured so the UI can offer only usable ones.
+  const models = [
+    { id: 'model1', label: 'Model 1', available: providerAvailable('soniox') },
+    { id: 'model2', label: 'Model 2', available: providerAvailable('gemini') },
+  ];
+  const firstAvailable = (models.find((m) => m.available) || models[0]).id;
   res.json({
     segmentMinutes: SEGMENT_MINUTES,
     segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000),
     retentionDays: RETENTION_DAYS,
+    models,
+    defaultModel: firstAvailable,
   });
 });
 
@@ -987,6 +1056,7 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
       source: 'live',
       status: 'uploaded',
       audio_path: finalPath,
+      stt_provider: resolveProvider(req.body && req.body.model),
     });
 
     // Session audio is now assembled into the job; drop the segment store.
@@ -1047,6 +1117,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     soniox: !!SONIOX_API_KEY,
+    gemini: !!GEMINI_API_KEY,
     anthropic: !!ANTHROPIC_API_KEY,
     telegram: !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID),
   });
