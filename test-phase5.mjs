@@ -88,9 +88,35 @@ async function run() {
   const bob = db.getUserByEmail('bob@example.com');
   ok('both users exist in the DB', !!alice && !!bob && alice.id !== bob.id);
 
-  // 3) Consent (PDPA) is recorded.
-  const consent = await (await fetch(`${BASE}/api/me/consent`, authed(cookieA, { method: 'POST' }))).json();
+  // 3) Consent (PDPA) is recorded, with the separate marketing opt-in.
+  const consent = await (await fetch(`${BASE}/api/me/consent`, authed(cookieA, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketing: true }),
+  }))).json();
   ok('consent is recorded', consent.ok === true && consent.consentAt > 0);
+  ok('marketing opt-in is recorded separately', consent.marketingConsentAt > 0);
+  // Bob consents WITHOUT marketing (proves the two are independent).
+  await fetch(`${BASE}/api/me/consent`, authed(cookieB, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketing: false }),
+  }));
+  ok('bob is not on the marketing list', db.getUserByEmail('bob@example.com').marketing_consent_at == null);
+
+  // 3b) Marketing export (admin-only) lists only opted-in addresses.
+  //     Promote alice to admin for this check, then demote isn't needed (deleted later).
+  db.db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(alice.id);
+  const csvRes = await fetch(`${BASE}/api/admin/marketing.csv`, authed(cookieA));
+  const csv = await csvRes.text();
+  ok('marketing CSV is admin-only + downloadable', csvRes.ok
+    && /filename=".*marketing-optin-emails\.csv"/.test(csvRes.headers.get('content-disposition') || ''));
+  ok('CSV includes the opted-in user', csv.includes('alice@example.com'));
+  ok('CSV excludes the opted-out user', !csv.includes('bob@example.com'));
+
+  // 3c) Unsubscribe removes them from the export (withdrawable consent).
+  await fetch(`${BASE}/api/me/marketing`, authed(cookieA, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ optIn: false }),
+  }));
+  const csv2 = await (await fetch(`${BASE}/api/admin/marketing.csv`, authed(cookieA))).text();
+  ok('unsubscribe drops the user from the export', !csv2.includes('alice@example.com'));
+  db.db.prepare('UPDATE users SET is_admin = 0 WHERE id = ?').run(alice.id);
 
   // 4) Isolation: each user only sees their own jobs.
   const jobA = db.createJob({ user_id: alice.id, source: 'upload', status: 'ready', markdown: 'A summary', original_name: 'a-job' });

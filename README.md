@@ -142,6 +142,16 @@ per-user accounts:
   this audio") is required on first sign-in and logged with a timestamp; the
   retention window is stated there; **Delete account** removes all of the user's
   jobs, files, usage, sessions, and the account row.
+- **Product-updates agreement + marketing list**: a second required checkbox on
+  the consent gate — agreement to receive product updates (e.g. Dojo Marketplace),
+  framed as an accepted term with a clear unsubscribe rather than a bundled
+  "consent". Stored as a separate, timestamped `marketing_consent_at`. Users can
+  **unsubscribe/re-subscribe anytime** from the account bar ("Emails: on/off"),
+  which clears/sets the flag. Admins export **only currently-opted-in** addresses
+  as CSV (`GET /api/admin/marketing.csv`); opt-outs drop off the list
+  automatically. Note: forcing marketing consent as a signup gate is legally
+  weaker than an opt-in under PDPA — the unsubscribe path is what keeps it
+  defensible; confirm with compliance before using the list.
 
 ## Endpoints
 
@@ -158,7 +168,7 @@ per-user accounts:
 - **Downloads:** `GET /api/jobs/:id/download/summary.md` · `…/transcript.txt` (raw) · `…/transcript-cleaned.txt` · `…/audio` (original) · `…/audio.mp3` · `…/all.zip`
 - `POST /api/send-telegram` — JSON `{ markdown }`
 - **Auth (AUTH=magic):** `POST /api/auth/request` (email → magic link) · `GET /auth/verify?token=` (sets session cookie) · `POST /api/auth/logout`
-- **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` · `DELETE /api/me` (delete account + all data) · `GET /api/admin/usage` (admin only)
+- **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` (JSON `{ marketing }`) · `POST /api/me/marketing` (JSON `{ optIn }` — unsubscribe/re-subscribe) · `DELETE /api/me` (delete account + all data) · `GET /api/admin/usage` (admin only) · `GET /api/admin/marketing.csv` (admin only — opted-in emails)
 
 ## Tests
 

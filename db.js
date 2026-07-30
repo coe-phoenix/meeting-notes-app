@@ -42,6 +42,7 @@ db.exec(`
     email         TEXT UNIQUE NOT NULL,
     is_admin      INTEGER NOT NULL DEFAULT 0,
     consent_at    INTEGER,
+    marketing_consent_at INTEGER,
     created_at    INTEGER NOT NULL,
     last_login_at INTEGER
   );
@@ -74,13 +75,14 @@ db.exec(`
 
 // Lightweight migrations: add columns introduced after a DB was first created.
 // (CREATE TABLE IF NOT EXISTS won't alter an existing table.)
-function ensureColumn(name, ddl) {
-  const cols = db.prepare(`PRAGMA table_info(jobs)`).all().map((c) => c.name);
-  if (!cols.includes(name)) db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${ddl}`);
+function ensureColumn(table, name, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
 }
-ensureColumn('cleaned_transcript', 'TEXT');
-ensureColumn('faithfulness', 'TEXT'); // JSON: Phase 4 faithfulness-audit result
-ensureColumn('stt_provider', "TEXT NOT NULL DEFAULT 'soniox'"); // 'soniox' | 'gemini'
+ensureColumn('jobs', 'cleaned_transcript', 'TEXT');
+ensureColumn('jobs', 'faithfulness', 'TEXT'); // JSON: Phase 4 faithfulness-audit result
+ensureColumn('jobs', 'stt_provider', "TEXT NOT NULL DEFAULT 'soniox'"); // 'soniox' | 'gemini'
+ensureColumn('users', 'marketing_consent_at', 'INTEGER'); // opt-in to product marketing (Phase 5)
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -170,6 +172,9 @@ const authStmts = {
   userById: db.prepare(`SELECT * FROM users WHERE id = ?`),
   allUsers: db.prepare(`SELECT * FROM users ORDER BY created_at ASC`),
   setConsent: db.prepare(`UPDATE users SET consent_at = ? WHERE id = ?`),
+  setMarketing: db.prepare(`UPDATE users SET marketing_consent_at = ? WHERE id = ?`),
+  marketingOptIns: db.prepare(`SELECT email, created_at, marketing_consent_at FROM users
+                               WHERE marketing_consent_at IS NOT NULL ORDER BY marketing_consent_at ASC`),
   setLastLogin: db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`),
   delUser: db.prepare(`DELETE FROM users WHERE id = ?`),
 
@@ -211,6 +216,10 @@ function getUserByEmail(email) { return authStmts.userByEmail.get(String(email).
 function getUserById(id) { return authStmts.userById.get(id); }
 function listUsers() { return authStmts.allUsers.all(); }
 function setUserConsent(id) { authStmts.setConsent.run(now(), id); return getUserById(id); }
+// Opt in/out of product marketing. Opt-in stamps the time; opt-out clears it —
+// so the export always reflects current, withdrawable consent.
+function setUserMarketing(id, optIn) { authStmts.setMarketing.run(optIn ? now() : null, id); return getUserById(id); }
+function listMarketingOptIns() { return authStmts.marketingOptIns.all(); }
 function setUserLastLogin(id) { authStmts.setLastLogin.run(now(), id); }
 
 function createLoginToken(tokenHash, email, ttlMs) {
@@ -305,6 +314,8 @@ module.exports = {
   getUserById,
   listUsers,
   setUserConsent,
+  setUserMarketing,
+  listMarketingOptIns,
   setUserLastLogin,
   createLoginToken,
   consumeLoginToken,

@@ -831,16 +831,31 @@ app.get('/api/me', (req, res) => {
     retentionDays: RETENTION_DAYS,
     quota: { ...q, month: new Date(monthStartMs()).toISOString().slice(0, 7) },
     user: auth.enabled && req.user
-      ? { email: req.user.email, isAdmin: !!req.user.is_admin, consentAt: req.user.consent_at, createdAt: req.user.created_at }
+      ? {
+          email: req.user.email, isAdmin: !!req.user.is_admin,
+          consentAt: req.user.consent_at, createdAt: req.user.created_at,
+          marketingConsentAt: req.user.marketing_consent_at,
+        }
       : null,
   });
 });
 
-// Record PDPA consent ("I have consent to record everyone in this audio").
+// Record PDPA consent ("I have consent to record everyone in this audio"). The
+// optional `marketing` flag is a SEPARATE opt-in — never bundled into the
+// required recording consent — so a marketing list only ever contains people who
+// explicitly ticked it.
 app.post('/api/me/consent', (req, res) => {
   if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account to record consent for' });
   const updated = jobs.setUserConsent(req.user.id);
-  res.json({ ok: true, consentAt: updated.consent_at });
+  const withMkt = jobs.setUserMarketing(req.user.id, !!(req.body && req.body.marketing));
+  res.json({ ok: true, consentAt: updated.consent_at, marketingConsentAt: withMkt.marketing_consent_at });
+});
+
+// Change the marketing preference later — the withdraw/unsubscribe path.
+app.post('/api/me/marketing', (req, res) => {
+  if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account' });
+  const updated = jobs.setUserMarketing(req.user.id, !!(req.body && req.body.optIn));
+  res.json({ ok: true, marketingConsentAt: updated.marketing_consent_at });
 });
 
 // Account deletion (PDPA): remove all of the user's jobs + files + usage + row.
@@ -864,6 +879,22 @@ app.get('/api/admin/usage', (req, res) => {
     };
   });
   res.json({ month: new Date(monthStartMs()).toISOString().slice(0, 7), minutesLimit: QUOTA_MINUTES, users });
+});
+
+// Admin: export ONLY the addresses that currently agree to product marketing
+// (opt-out clears the flag, so this list is always live + withdrawable). CSV.
+app.get('/api/admin/marketing.csv', (req, res) => {
+  if (!auth.enabled || !req.user || !req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
+  const rows = jobs.listMarketingOptIns();
+  const csv = ['email,signed_up_at,opted_in_at']
+    .concat(rows.map((r) => [
+      r.email,
+      new Date(r.created_at).toISOString(),
+      new Date(r.marketing_consent_at).toISOString(),
+    ].join(',')))
+    .join('\n');
+  const date = new Date().toISOString().slice(0, 10);
+  sendDownload(res, `${date}-marketing-optin-emails.csv`, 'text/csv', csv + '\n');
 });
 
 // ---------- Route: process recording + attachments ----------

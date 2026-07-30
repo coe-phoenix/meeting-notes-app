@@ -86,6 +86,7 @@
   <span id="accountEmail" class="muted"></span>
   <span class="account-actions">
     <span id="accountUsage" class="muted"></span>
+    <a class="link" id="marketingLink" title="Product update emails"></a>
     <a class="link hidden" id="adminLink" href="#/admin">Admin</a>
     <a class="link" id="logoutLink">Log out</a>
     <a class="link danger-link" id="deleteAccountLink">Delete account</a>
@@ -110,9 +111,13 @@
     <label>Before you start</label>
     <p class="sub" style="margin:2px 0 12px;">This app records and transcribes conversations. You are responsible for having the consent of everyone in any audio you record or upload.</p>
     <p class="sub" id="consentRetention" style="margin:0 0 12px;"></p>
-    <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea;">
+    <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea; margin-bottom:10px;">
       <input type="checkbox" id="consentCheck" style="margin-top:3px;" />
       <span>I confirm I have consent to record everyone in the audio I submit, and I accept the retention policy above.</span>
+    </label>
+    <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea;">
+      <input type="checkbox" id="marketingCheck" style="margin-top:3px;" />
+      <span>I agree to receive occasional product updates (e.g. Dojo Marketplace and other products from the same company). I can unsubscribe anytime from my account.</span>
     </label>
     <button class="btn-primary" id="consentBtn" style="margin-top:14px;" disabled>Agree &amp; continue</button>
     <div class="status" id="consentStatus"></div>
@@ -237,6 +242,10 @@
   <div class="card" style="margin-top:12px;">
     <label>Usage this month <span id="adminMonth" class="muted"></span></label>
     <div id="adminList" style="margin-top:12px;"><p class="muted">Loading…</p></div>
+    <div class="btn-row">
+      <button class="btn-secondary" id="adminExportBtn">Download marketing opt-in emails (CSV)</button>
+    </div>
+    <p class="sub" style="margin:8px 0 0;">Only addresses that currently agree to product updates. Opt-outs are excluded automatically.</p>
   </div>
 </div>
 
@@ -1235,9 +1244,37 @@ function paintAccountBar(me) {
   document.getElementById('accountUsage').textContent = q.minutesLimit > 0
     ? `${fmtMins(q.minutesUsed)} / ${q.minutesLimit} min this month`
     : `${fmtMins(q.minutesUsed)} min this month`;
+  paintMarketingLink(!!me.user.marketingConsentAt);
   document.getElementById('adminLink').classList.toggle('hidden', !me.user.isAdmin);
   accountBar.classList.remove('hidden');
 }
+
+function paintMarketingLink(optedIn) {
+  document.getElementById('marketingLink').textContent = optedIn ? 'Emails: on' : 'Emails: off';
+}
+
+// Unsubscribe / re-subscribe to product updates (the withdraw path).
+document.getElementById('marketingLink').onclick = async () => {
+  if (!ME || !ME.user) return;
+  const next = !ME.user.marketingConsentAt;
+  try {
+    const res = await fetch('/api/me/marketing', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ optIn: next }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    ME.user.marketingConsentAt = data.marketingConsentAt;
+    paintMarketingLink(!!ME.user.marketingConsentAt);
+  } catch (e) { /* leave state unchanged on failure */ }
+};
+
+document.getElementById('adminExportBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = '/api/admin/marketing.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
 
 // Show one auth screen ('login' | 'consent') or null for the app.
 function showAuthScreen(which) {
@@ -1274,13 +1311,23 @@ document.getElementById('loginEmail').addEventListener('keydown', (e) => {
 });
 
 const consentCheck = document.getElementById('consentCheck');
-consentCheck.onchange = () => { document.getElementById('consentBtn').disabled = !consentCheck.checked; };
+const marketingCheck = document.getElementById('marketingCheck');
+// Both boxes are required to proceed (product decision: free service, so agreeing
+// to product updates is a condition of signup — with a real unsubscribe below).
+function refreshConsentBtn() {
+  document.getElementById('consentBtn').disabled = !(consentCheck.checked && marketingCheck.checked);
+}
+consentCheck.onchange = refreshConsentBtn;
+marketingCheck.onchange = refreshConsentBtn;
 document.getElementById('consentBtn').onclick = async () => {
   const status = document.getElementById('consentStatus');
   const btn = document.getElementById('consentBtn');
   btn.disabled = true; status.textContent = 'Saving…';
   try {
-    const res = await fetch('/api/me/consent', { method: 'POST' });
+    const res = await fetch('/api/me/consent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketing: marketingCheck.checked }),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not save');
     await init(); // re-evaluate → enter the app
