@@ -71,6 +71,23 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, created_at);
+
+  -- Phase 5.5: per-user data keys (wrapped by the server master key) for
+  -- envelope encryption at rest. Keyed by user_id so it works with AUTH on or
+  -- off (the single-user 'local' id gets a key too).
+  CREATE TABLE IF NOT EXISTS data_keys (
+    user_id    TEXT PRIMARY KEY,
+    wrapped    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  -- Phase 5.5: abuse reports (basic moderation path).
+  CREATE TABLE IF NOT EXISTS reports (
+    id         TEXT PRIMARY KEY,
+    job_id     TEXT,
+    reporter   TEXT,
+    reason     TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // Lightweight migrations: add columns introduced after a DB was first created.
@@ -83,6 +100,9 @@ ensureColumn('jobs', 'cleaned_transcript', 'TEXT');
 ensureColumn('jobs', 'faithfulness', 'TEXT'); // JSON: Phase 4 faithfulness-audit result
 ensureColumn('jobs', 'stt_provider', "TEXT NOT NULL DEFAULT 'soniox'"); // 'soniox' | 'gemini'
 ensureColumn('users', 'marketing_consent_at', 'INTEGER'); // opt-in to product marketing (Phase 5)
+ensureColumn('users', 'suspended_at', 'INTEGER'); // admin suspend (Phase 5.5)
+ensureColumn('jobs', 'encrypted', 'INTEGER NOT NULL DEFAULT 0'); // 1 = audio+text encrypted at rest
+ensureColumn('jobs', 'upload_consent_at', 'INTEGER'); // per-upload "I have consent" timestamp
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -92,9 +112,9 @@ const STUCK = ['transcribing', 'summarising'];
 const stmts = {
   insert: db.prepare(`
     INSERT INTO jobs (id, user_id, original_name, mime, size_bytes, source, status,
-                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, faithfulness, stt_provider, created_at, updated_at)
+                      duration_minutes, audio_path, raw_transcript, cleaned_transcript, markdown, faithfulness, stt_provider, encrypted, upload_consent_at, created_at, updated_at)
     VALUES (@id, @user_id, @original_name, @mime, @size_bytes, @source, @status,
-            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @faithfulness, @stt_provider, @created_at, @updated_at)
+            @duration_minutes, @audio_path, @raw_transcript, @cleaned_transcript, @markdown, @faithfulness, @stt_provider, @encrypted, @upload_consent_at, @created_at, @updated_at)
   `),
   get: db.prepare(`SELECT * FROM jobs WHERE id = ?`),
   listAll: db.prepare(`SELECT * FROM jobs ORDER BY created_at DESC`),
@@ -122,6 +142,8 @@ function createJob(fields) {
     markdown: fields.markdown || null,
     faithfulness: fields.faithfulness || null,
     stt_provider: fields.stt_provider || 'soniox',
+    encrypted: fields.encrypted ? 1 : 0,
+    upload_consent_at: fields.upload_consent_at != null ? fields.upload_consent_at : null,
     created_at: now(),
     updated_at: now(),
   };
@@ -145,6 +167,7 @@ function nextQueuedJob() {
 const UPDATABLE = new Set([
   'status', 'error', 'duration_minutes', 'audio_path',
   'raw_transcript', 'cleaned_transcript', 'markdown', 'faithfulness', 'original_name', 'mime', 'size_bytes',
+  'encrypted', 'upload_consent_at',
 ]);
 function updateJob(id, patch) {
   const keys = Object.keys(patch).filter((k) => UPDATABLE.has(k));
@@ -176,7 +199,18 @@ const authStmts = {
   marketingOptIns: db.prepare(`SELECT email, created_at, marketing_consent_at FROM users
                                WHERE marketing_consent_at IS NOT NULL ORDER BY marketing_consent_at ASC`),
   setLastLogin: db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`),
+  setSuspended: db.prepare(`UPDATE users SET suspended_at = ? WHERE id = ?`),
   delUser: db.prepare(`DELETE FROM users WHERE id = ?`),
+
+  // Phase 5.5 — per-user wrapped data keys + abuse reports.
+  getDataKey: db.prepare(`SELECT * FROM data_keys WHERE user_id = ?`),
+  insertDataKey: db.prepare(`INSERT INTO data_keys (user_id, wrapped, created_at) VALUES (@user_id, @wrapped, @created_at)`),
+  updateDataKey: db.prepare(`UPDATE data_keys SET wrapped = ? WHERE user_id = ?`),
+  allDataKeys: db.prepare(`SELECT * FROM data_keys`),
+  delDataKey: db.prepare(`DELETE FROM data_keys WHERE user_id = ?`),
+  insertReport: db.prepare(`INSERT INTO reports (id, job_id, reporter, reason, created_at)
+                            VALUES (@id, @job_id, @reporter, @reason, @created_at)`),
+  listReports: db.prepare(`SELECT * FROM reports ORDER BY created_at DESC`),
 
   insertToken: db.prepare(`INSERT INTO login_tokens (token_hash, email, expires_at, consumed_at, created_at)
                            VALUES (@token_hash, @email, @expires_at, NULL, @created_at)`),
@@ -221,6 +255,25 @@ function setUserConsent(id) { authStmts.setConsent.run(now(), id); return getUse
 function setUserMarketing(id, optIn) { authStmts.setMarketing.run(optIn ? now() : null, id); return getUserById(id); }
 function listMarketingOptIns() { return authStmts.marketingOptIns.all(); }
 function setUserLastLogin(id) { authStmts.setLastLogin.run(now(), id); }
+// Admin suspend/unsuspend (Phase 5.5). Suspended users can't authenticate.
+function setUserSuspended(id, suspended) { authStmts.setSuspended.run(suspended ? now() : null, id); return getUserById(id); }
+
+// ---------- Phase 5.5: data keys + reports ----------
+// db stays crypto-agnostic: the server wraps/unwraps; here we just persist the
+// already-wrapped key. Returns the row ({ user_id, wrapped, created_at }) or null.
+function getDataKey(userId) { return authStmts.getDataKey.get(userId); }
+function saveDataKey(userId, wrapped) {
+  authStmts.insertDataKey.run({ user_id: userId, wrapped, created_at: now() });
+  return authStmts.getDataKey.get(userId);
+}
+function rewrapDataKey(userId, wrapped) { authStmts.updateDataKey.run(wrapped, userId); }
+function listDataKeys() { return authStmts.allDataKeys.all(); }
+function addReport({ job_id, reporter, reason }) {
+  const row = { id: crypto.randomUUID(), job_id: job_id || null, reporter: reporter || null, reason, created_at: now() };
+  authStmts.insertReport.run(row);
+  return row;
+}
+function listReports() { return authStmts.listReports.all(); }
 
 function createLoginToken(tokenHash, email, ttlMs) {
   authStmts.insertToken.run({
@@ -279,6 +332,7 @@ function deleteUserCompletely(userId) {
     delJobsByUser.run(userId);
     authStmts.delUserUsage.run(userId);
     authStmts.delUserSessions.run(userId);
+    authStmts.delDataKey.run(userId); // their key can never decrypt anything again
     authStmts.delUser.run(userId);
   });
   tx();
@@ -328,4 +382,12 @@ module.exports = {
   hasUsageForJob,
   purgeExpiredAuth,
   deleteUserCompletely,
+  // Phase 5.5 — suspend, data keys, reports
+  setUserSuspended,
+  getDataKey,
+  saveDataKey,
+  rewrapDataKey,
+  listDataKeys,
+  addReport,
+  listReports,
 };

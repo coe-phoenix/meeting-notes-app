@@ -83,7 +83,10 @@ function attach(app, db) {
       const session = db.getSession(sha256(raw));
       if (session) {
         const user = db.getUserById(session.user_id);
-        if (user) { req.user = user; req.authSession = session; }
+        // Suspended accounts (Phase 5.5) are treated as not-signed-in, but flagged
+        // so the gate can return a clear message instead of a bare 401.
+        if (user && user.suspended_at) req.suspended = true;
+        else if (user) { req.user = user; req.authSession = session; }
       }
     }
     next();
@@ -91,6 +94,9 @@ function attach(app, db) {
 
   // 2) Gate: allow the login UI + auth endpoints through; block data routes.
   app.use((req, res, next) => {
+    if (req.suspended && (req.path.startsWith('/api/') && req.path !== '/api/me')) {
+      return res.status(403).json({ error: 'This account has been suspended. Contact support.' });
+    }
     if (req.user) return next();
     const p = req.path;
     if (p.startsWith('/api/auth/') || p === '/auth/verify' || p === '/healthz') return next();
@@ -98,6 +104,9 @@ function attach(app, db) {
     // ON but nobody is signed in (so it can render the login screen) rather than
     // getting a bare 401 it can't distinguish from auth being off.
     if (req.method === 'GET' && p === '/api/me') return next();
+    // Runtime config (models, retention, consent requirement) carries no user
+    // data and the login/consent screens need it — allow it pre-auth.
+    if (req.method === 'GET' && p === '/api/config') return next();
     // Let GETs for the SPA shell + static assets load so the login screen renders.
     if (req.method === 'GET' && !p.startsWith('/api/')) return next();
     return res.status(401).json({ error: 'Not authenticated' });

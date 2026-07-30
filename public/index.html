@@ -131,6 +131,12 @@
     <div class="seg" id="modelToggle"></div>
   </div>
 </div>
+<div class="card hidden" id="upload-consent-card" style="padding:12px 16px;">
+  <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea; margin:0;">
+    <input type="checkbox" id="uploadConsent" style="margin-top:3px;" />
+    <span>I have consent to record everyone in this audio. (<a class="link" href="#/terms">Terms</a>)</span>
+  </label>
+</div>
 <div class="card hidden" id="recovery-card">
   <label>Unfinished recording found</label>
   <p class="sub" id="recoveryInfo">A previous recording didn't finish. Its audio was saved on this device.</p>
@@ -201,6 +207,7 @@
       <button class="btn-danger" id="jobDeleteBtn">Delete now</button>
     </div>
     <div class="status muted" id="jobRetention"></div>
+    <a class="link" id="jobReportLink" style="font-size:0.8rem;">Report content</a>
   </div>
 
   <div class="card hidden" id="jobReadyCard">
@@ -249,11 +256,35 @@
   </div>
 </div>
 
+<div id="view-terms" class="hidden">
+  <a class="link" href="#/">&larr; Back</a>
+  <div class="card" style="margin-top:12px;">
+    <label>Terms of Use &amp; Privacy</label>
+    <p class="sub" style="margin-top:2px;"><em>Draft — pending legal review.</em></p>
+    <div style="font-size:0.9rem; line-height:1.5; color:#c8c8cc;">
+      <p><strong>Recording consent.</strong> You may only upload or record audio of people who have
+      consented to being recorded. You are responsible for obtaining that consent under Malaysia's
+      PDPA and any other applicable law. Do not upload audio you have no right to record.</p>
+      <p><strong>What we store, and for how long.</strong> We store your audio, transcripts, and
+      summaries so you can access and download them. Files are auto-deleted after the retention
+      window shown in the app, and you can delete any recording — or your whole account — at any time.</p>
+      <p><strong>Processing.</strong> Audio is sent to third-party speech-to-text and AI providers
+      to produce transcripts and summaries. At rest, content is encrypted where enabled.</p>
+      <p><strong>Acceptable use.</strong> No unlawful, harassing, or infringing content. We may
+      suspend accounts and remove content that is reported and found to violate these terms.</p>
+      <p><strong>Report abuse.</strong> Use the “Report content” action on any recording, or contact
+      the operator. We aim to review reports promptly and remove violating content.</p>
+      <p class="muted">This is placeholder wording to be reviewed and finalised with counsel before public launch.</p>
+    </div>
+  </div>
+</div>
+
 <script>
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
 let currentStream = null, sessionId = null, recording = false, recovering = false;
 let captureKind = 'mic'; // 'mic' | 'tab' | 'tabmic' — source of the current live recording
 let selectedModel = 'model1'; // masked transcription model ('model1'=Soniox, 'model2'=Gemini)
+let requireUploadConsent = false; // per-upload "I have consent" tick (public mode)
 // For 'tabmic': the source tracks (tab audio + mic) and the AudioContext used to
 // mix them, so stopRecording can tear them down (the recorder only sees the mix).
 let extraTracks = [], mixCtx = null;
@@ -278,11 +309,23 @@ let audioCtx = null, analyser = null, meterRAF = null;
       const cfg = await res.json();
       if (cfg.segmentMs > 0) SEGMENT_MS = cfg.segmentMs;
       if (cfg.models) buildModelToggle(cfg.models, cfg.defaultModel);
+      requireUploadConsent = !!cfg.requireUploadConsent;
+      if (requireUploadConsent) document.getElementById('upload-consent-card').classList.remove('hidden');
     }
   } catch (e) {
     console.warn('Could not load config, using default segment length:', e.message);
   }
 })();
+
+// Per-upload consent gate (public mode). Returns true when not required or ticked.
+function consentOk() {
+  return !requireUploadConsent || document.getElementById('uploadConsent').checked;
+}
+function needConsentMsg(statusEl) {
+  if (statusEl) statusEl.textContent = 'Please tick the consent box first.';
+  const card = document.getElementById('upload-consent-card');
+  if (card) { card.style.outline = '1px solid #e2c455'; setTimeout(() => { card.style.outline = ''; }, 1500); }
+}
 
 // Build the masked Model 1 / Model 2 toggle. Only shown when 2+ providers are
 // configured (otherwise there's no choice to make).
@@ -656,6 +699,7 @@ async function finalizeSession() {
   const fd = new FormData();
   fd.append('sessionId', sessionId);
   fd.append('model', selectedModel);
+  fd.append('consent', consentOk() ? '1' : '0');
   for (const f of attachmentUpload.files) fd.append('attachments', f, f.name);
 
   try {
@@ -680,6 +724,7 @@ async function finalizeSession() {
 async function startCapture(kind) {
   if (recording) return;
   if (kind === 'mic' && !canRecord) return;
+  if (!consentOk()) { needConsentMsg(recStatus); return; }
   try {
     currentStream = kind === 'tab' ? await acquireTabStream()
       : kind === 'tabmic' ? await acquireTabMicStream()
@@ -804,7 +849,7 @@ async function uploadFileAsJob(file) {
   const initRes = await fetch('/api/uploads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: file.name, size: file.size, mime: file.type, model: selectedModel }),
+    body: JSON.stringify({ filename: file.name, size: file.size, mime: file.type, model: selectedModel, consent: consentOk() }),
   });
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || 'Could not start upload');
@@ -830,6 +875,7 @@ async function uploadFileAsJob(file) {
 
 processBtn.onclick = async () => {
   if (!uploadedAudioFile) return;
+  if (!consentOk()) { needConsentMsg(processStatus); return; }
   processBtn.disabled = true;
   const label = processBtn.textContent;
   processBtn.textContent = 'Uploading…';
@@ -950,6 +996,7 @@ const views = {
   jobs: document.getElementById('view-jobs'),
   job: document.getElementById('view-job'),
   admin: document.getElementById('view-admin'),
+  terms: document.getElementById('view-terms'),
 };
 const navHome = document.getElementById('nav-home');
 const navJobs = document.getElementById('nav-jobs');
@@ -1181,6 +1228,21 @@ document.getElementById('jobDlAudio').onclick = () => directDownload('audio');
 document.getElementById('jobDlMp3').onclick = () => directDownload('audio.mp3');
 document.getElementById('jobDlAll').onclick = () => directDownload('all.zip');
 
+document.getElementById('jobReportLink').onclick = async () => {
+  const reason = prompt('Report this content — what is the problem? (This is sent to the operator.)');
+  if (!reason || !reason.trim()) return;
+  try {
+    const res = await fetch('/api/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId: currentJobId, reason }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Report failed');
+    document.getElementById('jobActionStatus').textContent = 'Reported — thank you. The operator will review it.';
+  } catch (e) {
+    document.getElementById('jobActionStatus').textContent = 'Error: ' + e.message;
+  }
+};
+
 document.getElementById('jobDeleteBtn').onclick = async () => {
   if (!confirm('Delete this recording and all its files (audio, transcripts, summary)? This cannot be undone.')) return;
   const btn = document.getElementById('jobDeleteBtn');
@@ -1197,9 +1259,19 @@ document.getElementById('jobDeleteBtn').onclick = async () => {
 };
 
 function router() {
-  // While an auth screen is up (not signed in, or consent pending), ignore hash
-  // navigation so app views can't render over the login/consent gate.
-  if (ME && ME.authEnabled && (!ME.user || !ME.user.consentAt)) return;
+  // Terms is readable even before sign-in/consent (linked from the consent gate):
+  // hide any auth screen + app views and show only terms.
+  if (location.hash === '#/terms') {
+    authViews.login.classList.add('hidden');
+    authViews.consent.classList.add('hidden');
+    for (const k in views) views[k].classList.toggle('hidden', k !== 'terms');
+    return;
+  }
+  // If an auth gate is required, (re)show it — also covers returning from #/terms.
+  if (ME && ME.authEnabled && (!ME.user || !ME.user.consentAt)) {
+    showAuthScreen(!ME.user ? 'login' : 'consent');
+    return;
+  }
   stopJobPoll();
   stopJobsPoll();
   const hash = location.hash || '#/';
@@ -1360,9 +1432,27 @@ async function renderAdmin() {
     document.getElementById('adminMonth').textContent =
       `(${data.month} · cap ${data.minutesLimit > 0 ? data.minutesLimit + ' min' : 'none'})`;
     if (!data.users.length) { el.innerHTML = '<p class="muted">No users yet.</p>'; return; }
-    el.innerHTML = '<table class="usage"><thead><tr><th>User</th><th class="num">Minutes</th><th class="num">Jobs</th></tr></thead><tbody>'
-      + data.users.map((u) => `<tr><td>${escapeHtml(u.email)}${u.isAdmin ? ' · admin' : ''}</td><td class="num">${fmtMins(u.minutesUsed)}</td><td class="num">${u.jobs}</td></tr>`).join('')
+    el.innerHTML = '<table class="usage"><thead><tr><th>User</th><th class="num">Minutes</th><th class="num">Jobs</th><th></th></tr></thead><tbody>'
+      + data.users.map((u) => `<tr>
+          <td>${escapeHtml(u.email)}${u.isAdmin ? ' · admin' : ''}${u.suspended ? ' · <span class="warn">suspended</span>' : ''}</td>
+          <td class="num">${fmtMins(u.minutesUsed)}</td>
+          <td class="num">${u.jobs}</td>
+          <td class="num">${u.isAdmin ? '' : `<a class="link" data-suspend="${u.id}" data-to="${u.suspended ? '0' : '1'}">${u.suspended ? 'Unsuspend' : 'Suspend'}</a>`}</td>
+        </tr>`).join('')
       + '</tbody></table>';
+    el.querySelectorAll('a[data-suspend]').forEach((a) => {
+      a.onclick = async () => {
+        const suspend = a.dataset.to === '1';
+        if (suspend && !confirm('Suspend this account? They will be blocked from signing in until unsuspended.')) return;
+        try {
+          const r = await fetch(`/api/admin/users/${a.dataset.suspend}/suspend`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suspended: suspend }),
+          });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Failed');
+          renderAdmin();
+        } catch (e) { alert('Error: ' + e.message); }
+      };
+    });
   } catch (e) { el.innerHTML = `<p class="warn">${escapeHtml(e.message)}</p>`; }
 }
 

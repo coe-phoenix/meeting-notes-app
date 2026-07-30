@@ -157,32 +157,34 @@ Last, because everything above is testable single-user.
 
 Only needed once this stops being an internal tool and becomes a public toy app. Multi-tenant + public means the threat model changes: strangers' data, strangers' cost exposure, strangers' consent.
 
+> **Status: DONE (working tree), feature-flagged OFF by default.** Encryption lives in `cryptostore.js` and is wired through every audio/text write+read path in `server.js`; enable with `ENCRYPT_AT_REST=1` + a base64 32-byte `MASTER_KEY`. Rate limiting (`ratelimit.js`), admin suspend, public retention ceiling, per-upload consent, a draft Terms page, and a report path are all in. Verified by `test-crypto.mjs` + `test-phase55.mjs`.
+
 ### Encryption at rest (envelope encryption — NOT zero-knowledge)
 Zero-knowledge (master key derived from password, never leaves browser) is the wrong pattern here — the server *must* see plaintext to send audio to Soniox and transcripts to Claude. Envelope encryption protects the right thing (stolen disk/DB backup) without breaking the pipeline.
 
-- [ ] Generate a random **per-user data key** at signup (NOT derived from password)
-- [ ] Wrap (encrypt) each user's data key with a server-held **master key** (envelope encryption — same pattern as AWS KMS/Vault)
-- [ ] Master key itself stored outside the app's database (env var at minimum; a real KMS/secrets manager if budget allows)
-- [ ] Encrypt audio/transcript/summary files with **AES-256-GCM** using the user's data key before writing to disk
-- [ ] Decrypt only in memory, only when: sending to Soniox/Claude for processing, or serving an authenticated download
-- [ ] Password stored only as an **Argon2id hash** for login verification — never used as a crypto key directly
-- [ ] Key rotation plan: if the master key is ever suspected compromised, re-wrap all user data keys
+- [x] Generate a random **per-user data key** at signup *(lazily on first use, `dekFor`; stored in the `data_keys` table)*
+- [x] Wrap (encrypt) each user's data key with a server-held **master key** *(`cryptostore.wrapKey`/`unwrapKey`, AES-256-GCM)*
+- [x] Master key itself stored outside the app's database *(env var `MASTER_KEY`; documented to move to a secrets manager)*
+- [x] Encrypt audio/transcript/summary files with **AES-256-GCM** using the user's data key before writing to disk *(audio + attachments + mp3 cache as files; raw/cleaned/markdown/faithfulness as `enc1:` DB text)*
+- [x] Decrypt only in memory, only when: sending to Soniox/Claude for processing, or serving an authenticated download *(decrypt-to-temp for STT/ffmpeg + downloads; `decJobText` for reads)*
+- [~] Password stored only as an **Argon2id hash** — never used as a crypto key directly *(N/A: auth is passwordless magic-link, so there's no password to hash or misuse as a key)*
+- [x] Key rotation plan *(implemented: `rotate-master-key.mjs` re-wraps all data keys OLD→NEW)*
 
 ### Per-account quotas (before public launch, not after)
-- [ ] Minutes-transcribed cap per user per month (Soniox + Claude both bill per-minute/per-token — an open public endpoint with no cap is a live bill)
-- [ ] Hard stop + clear "quota reached" UI once hit, not a silent failure
-- [ ] Rate limit on upload endpoint (prevent scripted abuse independent of the quota)
-- [ ] Admin dashboard: usage across all accounts, ability to suspend an account
+- [x] Minutes-transcribed cap per user per month *(Phase 5 — `QUOTA_MINUTES`, ledger in `usage_events`)*
+- [x] Hard stop + clear "quota reached" UI once hit, not a silent failure *(Phase 5 — 429 + header display)*
+- [x] Rate limit on upload endpoint (independent of the quota) *(`ratelimit.js`, `UPLOAD_RATE_PER_HOUR`, on the upload routes → 429)*
+- [x] Admin dashboard: usage across all accounts, ability to suspend an account *(admin usage view + suspend/unsuspend; `POST /api/admin/users/:id/suspend`)*
 
 ### Consent + moderation (the part that isn't solved by code alone)
-- [ ] Checkbox at upload: "I have consent to record everyone in this audio" — logged with timestamp
-- [ ] Terms of Service covering third-party voice data, written for a Malaysian PDPA context
-- [ ] Basic abuse path: a way to flag/report content, and a documented takedown process
-- [ ] Decide and state a hard retention ceiling for public accounts (shorter than internal use — e.g. 7–14 days)
+- [x] Checkbox at upload: "I have consent to record everyone in this audio" — logged with timestamp *(required in public mode; stamped as `jobs.upload_consent_at`)*
+- [x] Terms of Service covering third-party voice data, PDPA context *(`#/terms` view — **draft, needs counsel review** before launch)*
+- [x] Basic abuse path: flag/report content + documented takedown *(“Report content” → `POST /api/report` → `reports` table + admin log/email; takedown steps in README)*
+- [x] Decide and state a hard retention ceiling for public accounts *(chosen 14 days via `PUBLIC_RETENTION_DAYS`; effective = min(RETENTION_DAYS, PUBLIC_RETENTION_DAYS) when auth on; shown in the UI)*
 
 ### Definition of done
-- [ ] Full DB + disk snapshot leaked → attacker has ciphertext only, no usable audio/text without the master key
-- [ ] A user hitting their quota gets a clear message, not a broken app or a surprise bill on your end
+- [x] Full DB + disk snapshot leaked → attacker has ciphertext only *(proven in `test-phase55.mjs`: audio on disk carries the encryption magic header, DB text is `enc1:`-prefixed, the secret is absent in plaintext — yet authenticated downloads/detail decrypt correctly)*
+- [x] A user hitting their quota gets a clear message, not a broken app or a surprise bill *(Phase 5, 429 + clear copy; upload rate-limit adds a second guard)*
 
 ---
 

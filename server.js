@@ -14,6 +14,8 @@ const jobs = require('./db');
 const prompts = require('./prompts');
 const auth = require('./auth');
 const gemini = require('./gemini');
+const cs = require('./cryptostore');
+const ratelimit = require('./ratelimit');
 
 const execFileP = promisify(execFile);
 
@@ -41,6 +43,17 @@ const RETENTION_DAYS = parseFloat(process.env.RETENTION_DAYS) > 0
 const QUOTA_MINUTES = parseFloat(process.env.QUOTA_MINUTES) > 0
   ? parseFloat(process.env.QUOTA_MINUTES)
   : 0;
+// Phase 5.5 — public-launch guardrails.
+// Shorter retention ceiling for a public/multi-tenant deployment (auth on). The
+// effective retention is min(RETENTION_DAYS, PUBLIC_RETENTION_DAYS) when auth is on.
+const PUBLIC_RETENTION_DAYS = parseFloat(process.env.PUBLIC_RETENTION_DAYS) > 0
+  ? parseFloat(process.env.PUBLIC_RETENTION_DAYS)
+  : 14;
+// Uploads allowed per user (or IP) per hour — throttles scripted abuse before it
+// costs anything. 0 = disabled.
+const UPLOAD_RATE_PER_HOUR = parseFloat(process.env.UPLOAD_RATE_PER_HOUR) >= 0
+  ? parseFloat(process.env.UPLOAD_RATE_PER_HOUR)
+  : 60;
 
 const SONIOX_BASE = 'https://api.soniox.com';
 const SONIOX_MODEL = 'stt-async-v5';
@@ -170,6 +183,18 @@ function blockedByQuota(req, res) {
   const uid = currentUserId(req);
   if (quotaExceeded(uid)) { res.status(429).json({ error: quotaMessage(uid) }); return true; }
   return false;
+}
+
+// Rate-limit the upload endpoints per user (IP fallback), independent of the
+// minutes quota. Keyed so a burst of tiny uploads is throttled before any cost.
+function rateLimitUploads(req, res, next) {
+  const key = auth.enabled && req.user ? `u:${req.user.id}` : `ip:${req.ip}`;
+  const r = ratelimit.check(`upload:${key}`, UPLOAD_RATE_PER_HOUR, 60 * 60 * 1000);
+  if (!r.ok) {
+    res.set('Retry-After', String(r.retryAfterSec));
+    return res.status(429).json({ error: `Too many uploads — try again in ${Math.ceil(r.retryAfterSec / 60)} min.` });
+  }
+  next();
 }
 
 const upload = multer({
@@ -391,17 +416,38 @@ function jobAttachmentsDir(jobId) {
   return path.join(UPLOAD_DIR, `${jobId}-attachments`);
 }
 
-function readJobAttachments(jobId) {
+function readJobAttachments(job) {
+  const jobId = typeof job === 'string' ? job : job.id;
+  const encrypted = typeof job === 'object' && job.encrypted;
   let dir;
   try { dir = jobAttachmentsDir(jobId); } catch { return []; }
   if (!fs.existsSync(dir)) return [];
   let meta;
   try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')); }
   catch { return []; }
-  return meta.map((m) => ({
-    mimetype: m.mimetype,
-    base64: fs.readFileSync(path.join(dir, m.file)).toString('base64'),
-  }));
+  const dek = encrypted ? dekFor(job.user_id) : null;
+  return meta.map((m) => {
+    let buf = fs.readFileSync(path.join(dir, m.file));
+    if (encrypted) buf = cs.decrypt(dek, buf);
+    return { mimetype: m.mimetype, base64: buf.toString('base64') };
+  });
+}
+
+// ---------- Encryption at rest (Phase 5.5) ----------
+// Per-user data key (unwrapped Buffer), or null when encryption is disabled.
+// Lazily creates + persists a wrapped key the first time a user needs one.
+function dekFor(userId) {
+  if (!cs.enabled) return null;
+  const uid = userId || 'local';
+  let row = jobs.getDataKey(uid);
+  if (!row) row = jobs.saveDataKey(uid, cs.wrapKey(cs.newDataKey()));
+  return cs.unwrapKey(row.wrapped);
+}
+// Decrypt a job's stored text column (raw/cleaned/markdown/faithfulness). Plain
+// (legacy / flag-off) jobs pass through untouched.
+function decJobText(job, val) {
+  if (!job.encrypted || val == null) return val;
+  return cs.decryptText(dekFor(job.user_id), val);
 }
 
 // ---------- Job processing pipeline (Phase 2 + Phase 3 layers) ----------
@@ -418,19 +464,33 @@ async function processJob(job) {
     throw new Error('Audio file for this job is missing');
   }
 
+  // Encryption at rest: the STT engines + ffprobe need plaintext, so decrypt the
+  // stored audio to a short-lived temp file for the duration of transcription.
+  const dek = job.encrypted ? dekFor(job.user_id) : null;
+  if (job.encrypted && !dek) throw new Error('Job is encrypted but the server master key is unavailable');
+  const encText = (s) => (job.encrypted ? cs.encryptText(dek, s) : s);
+
   jobs.updateJob(job.id, { status: 'transcribing', error: null });
-  const result = await transcribeFile(job.audio_path, job.original_name, provider);
-  const text = result.text;
-  // Fall back to ffprobe when the provider didn't report a duration (quota/usage).
-  let durationMinutes = result.durationMinutes;
-  if (durationMinutes == null) durationMinutes = await ffprobeDurationMinutes(job.audio_path);
+  let audioForStt = job.audio_path;
+  let tmpPlain = null;
+  if (job.encrypted) { tmpPlain = cs.decryptToTemp(dek, job.audio_path, path.extname(job.audio_path)); audioForStt = tmpPlain; }
+  let text, durationMinutes;
+  try {
+    const result = await transcribeFile(audioForStt, job.original_name, provider);
+    text = result.text;
+    // Fall back to ffprobe when the provider didn't report a duration (quota/usage).
+    durationMinutes = result.durationMinutes;
+    if (durationMinutes == null) durationMinutes = await ffprobeDurationMinutes(audioForStt);
+  } finally {
+    if (tmpPlain) { try { fs.unlinkSync(tmpPlain); } catch { /* ignore */ } }
+  }
   if (!text.trim()) {
     throw new Error('Transcription returned no speech — check the recording actually has audio');
   }
   // Raw layer: stored once and never overwritten from here on.
   jobs.updateJob(job.id, {
     status: 'summarising',
-    raw_transcript: text,
+    raw_transcript: encText(text),
     duration_minutes: durationMinutes,
   });
 
@@ -446,14 +506,14 @@ async function processJob(job) {
   let cleaned = '';
   try {
     cleaned = await prompts.cleanTranscript(anthropic, text);
-    if (cleaned) jobs.updateJob(job.id, { cleaned_transcript: cleaned });
+    if (cleaned) jobs.updateJob(job.id, { cleaned_transcript: encText(cleaned) });
   } catch (e) {
     console.error(`Job ${job.id} transcript-clean pass failed, using raw:`, e.message);
   }
 
   // Summary layer: built from the cleaned transcript (or raw if cleaning failed).
   const summaryBasis = cleaned || text;
-  const attachments = readJobAttachments(job.id);
+  const attachments = readJobAttachments(job);
   const markdown = await prompts.structureNotes(anthropic, summaryBasis, attachments);
 
   // Faithfulness audit (Phase 4): a second model pass checks the summary makes no
@@ -466,7 +526,7 @@ async function processJob(job) {
     console.error(`Job ${job.id} faithfulness audit failed:`, e.message);
     faithfulness = { version: prompts.FAITHFULNESS_PROMPT_VERSION, error: e.message };
   }
-  jobs.updateJob(job.id, { status: 'ready', markdown, faithfulness: JSON.stringify(faithfulness) });
+  jobs.updateJob(job.id, { status: 'ready', markdown: encText(markdown), faithfulness: encText(JSON.stringify(faithfulness)) });
 }
 
 // ---------- In-process serial worker ----------
@@ -514,16 +574,17 @@ function extFromName(name, mime) {
 }
 
 // Init an upload: returns an id the client uses for every chunk PUT.
-app.post('/api/uploads', (req, res) => {
+app.post('/api/uploads', rateLimitUploads, (req, res) => {
   try {
     if (blockedByQuota(req, res)) return;
-    const { filename, size, mime, model } = req.body || {};
+    const { filename, size, mime, model, consent } = req.body || {};
     const id = crypto.randomUUID();
     const dir = uploadTmpDir(id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({
       filename: filename || 'recording', size: size || null, mime: mime || null,
       provider: resolveProvider(model),
+      consentAt: consent === true || consent === '1' ? Date.now() : null,
     }));
     res.json({ uploadId: id });
   } catch (err) {
@@ -601,7 +662,7 @@ app.post('/api/uploads/:id/complete', (req, res) => {
       fs.closeSync(out);
     }
 
-    const size = fs.statSync(finalPath).size;
+    const size = fs.statSync(finalPath).size; // plaintext size (verify before encrypting)
     if (meta.size != null && size !== meta.size) {
       fs.unlinkSync(finalPath);
       return res.status(400).json({ error: `Size mismatch: assembled ${size}, expected ${meta.size}` });
@@ -609,9 +670,13 @@ app.post('/api/uploads/:id/complete', (req, res) => {
 
     fs.rmSync(dir, { recursive: true, force: true });
 
+    // Encrypt the assembled audio at rest (if enabled), after the size check.
+    const uid = currentUserId(req);
+    if (cs.enabled) cs.encryptFileInPlace(dekFor(uid), finalPath);
+
     const job = jobs.createJob({
       id: jobId,
-      user_id: currentUserId(req),
+      user_id: uid,
       original_name: meta.filename,
       mime: meta.mime,
       size_bytes: size,
@@ -619,6 +684,8 @@ app.post('/api/uploads/:id/complete', (req, res) => {
       status: 'uploaded',
       audio_path: finalPath,
       stt_provider: resolveProvider(meta.provider),
+      encrypted: cs.enabled ? 1 : 0,
+      upload_consent_at: meta.consentAt || null,
     });
     setImmediate(pumpQueue);
     res.json({ jobId: job.id, status: job.status });
@@ -629,7 +696,10 @@ app.post('/api/uploads/:id/complete', (req, res) => {
 });
 
 // ---------- Jobs API (Phase 2 + Phase 3) ----------
-const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+// Effective retention: a public deployment (auth on) is capped at the shorter
+// PUBLIC_RETENTION_DAYS; a single-user internal box uses RETENTION_DAYS.
+const RETENTION_DAYS_EFFECTIVE = auth.enabled ? Math.min(RETENTION_DAYS, PUBLIC_RETENTION_DAYS) : RETENTION_DAYS;
+const RETENTION_MS = RETENTION_DAYS_EFFECTIVE * 24 * 60 * 60 * 1000;
 
 function parseJsonOrNull(s) {
   if (!s) return null;
@@ -656,10 +726,10 @@ function publicJob(j, { full = false } = {}) {
     expiresAt: j.created_at + RETENTION_MS,
   };
   if (full) {
-    base.rawTranscript = j.raw_transcript || '';
-    base.cleanedTranscript = j.cleaned_transcript || '';
-    base.markdown = j.markdown || '';
-    base.faithfulness = parseJsonOrNull(j.faithfulness);
+    base.rawTranscript = decJobText(j, j.raw_transcript) || '';
+    base.cleanedTranscript = decJobText(j, j.cleaned_transcript) || '';
+    base.markdown = decJobText(j, j.markdown) || '';
+    base.faithfulness = parseJsonOrNull(decJobText(j, j.faithfulness));
   }
   return base;
 }
@@ -734,22 +804,42 @@ function sendDownload(res, filename, mime, body) {
 
 function jobDate(j) { return new Date(j.created_at).toISOString().slice(0, 10); }
 
-// Cached-mp3 path for a job. If the original already IS mp3, that file is used
-// directly and no cache copy is produced.
 function mp3PathFor(j) { return path.join(UPLOAD_DIR, `${j.id}.mp3`); }
-async function ensureMp3(j) {
+
+// Return a PLAINTEXT copy of a job's stored audio for serving/transcoding.
+// Encrypted jobs get a short-lived temp; callers MUST call cleanup() when done.
+function plaintextAudio(j) {
   if (!j.audio_path || !fs.existsSync(j.audio_path)) throw new Error('Audio not available');
-  if (path.extname(j.audio_path).toLowerCase() === '.mp3') return j.audio_path;
-  const out = mp3PathFor(j);
-  if (!fs.existsSync(out)) await ffmpegToMp3(j.audio_path, out);
-  return out;
+  if (!j.encrypted) return { path: j.audio_path, cleanup() {} };
+  const tmp = cs.decryptToTemp(dekFor(j.user_id), j.audio_path, path.extname(j.audio_path));
+  return { path: tmp, cleanup() { try { fs.unlinkSync(tmp); } catch { /* ignore */ } } };
+}
+
+// Return a PLAINTEXT mp3 to serve; caches the (possibly-encrypted) mp3 beside the
+// job so the transcode happens once. Returns { path, cleanup }.
+async function plaintextMp3(j) {
+  if (!j.audio_path || !fs.existsSync(j.audio_path)) throw new Error('Audio not available');
+  const isMp3 = path.extname(j.audio_path).toLowerCase() === '.mp3';
+  if (isMp3) return plaintextAudio(j); // original already mp3 (decrypts if needed)
+
+  const cache = mp3PathFor(j);
+  if (!fs.existsSync(cache)) {
+    const src = plaintextAudio(j);
+    try {
+      await ffmpegToMp3(src.path, cache);
+      if (j.encrypted) cs.encryptFileInPlace(dekFor(j.user_id), cache);
+    } finally { src.cleanup(); }
+  }
+  if (!j.encrypted) return { path: cache, cleanup() {} };
+  const tmp = cs.decryptToTemp(dekFor(j.user_id), cache, '.mp3');
+  return { path: tmp, cleanup() { try { fs.unlinkSync(tmp); } catch { /* ignore */ } } };
 }
 
 app.get('/api/jobs/:id/download/summary.md', (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
   if (!j.markdown) return res.status(404).json({ error: 'Summary not ready' });
-  sendDownload(res, `${jobDate(j)}-meeting-summary.md`, 'text/markdown', j.markdown);
+  sendDownload(res, `${jobDate(j)}-meeting-summary.md`, 'text/markdown', decJobText(j, j.markdown));
 });
 
 // Raw layer: exactly what the engine heard (speaker + language + [mm:ss] tags).
@@ -757,7 +847,7 @@ app.get('/api/jobs/:id/download/transcript.txt', (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
   if (!j.raw_transcript) return res.status(404).json({ error: 'Transcript not ready' });
-  sendDownload(res, `${jobDate(j)}-transcript-raw.txt`, 'text/plain', j.raw_transcript);
+  sendDownload(res, `${jobDate(j)}-transcript-raw.txt`, 'text/plain', decJobText(j, j.raw_transcript));
 });
 
 // Cleaned layer: STT errors fixed, nothing removed, [UNCLEAR] markers preserved.
@@ -765,7 +855,7 @@ app.get('/api/jobs/:id/download/transcript-cleaned.txt', (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
   if (!j.cleaned_transcript) return res.status(404).json({ error: 'Cleaned transcript not available' });
-  sendDownload(res, `${jobDate(j)}-transcript-cleaned.txt`, 'text/plain', j.cleaned_transcript);
+  sendDownload(res, `${jobDate(j)}-transcript-cleaned.txt`, 'text/plain', decJobText(j, j.cleaned_transcript));
 });
 
 // Bit-exact original audio (true raw). For uploads this is the file as sent; for
@@ -773,22 +863,21 @@ app.get('/api/jobs/:id/download/transcript-cleaned.txt', (req, res) => {
 app.get('/api/jobs/:id/download/audio', (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
-  if (!j.audio_path || !fs.existsSync(j.audio_path)) {
-    return res.status(404).json({ error: 'Audio not available' });
+  try {
+    const a = plaintextAudio(j);
+    res.download(a.path, `${jobDate(j)}-meeting-audio${path.extname(j.audio_path)}`, () => a.cleanup());
+  } catch (e) {
+    res.status(404).json({ error: e.message });
   }
-  res.download(j.audio_path, `${jobDate(j)}-meeting-audio${path.extname(j.audio_path)}`);
 });
 
 // mp3 convenience copy (transcoded once, then cached beside the job).
 app.get('/api/jobs/:id/download/audio.mp3', async (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
-  if (!j.audio_path || !fs.existsSync(j.audio_path)) {
-    return res.status(404).json({ error: 'Audio not available' });
-  }
   try {
-    const mp3 = await ensureMp3(j);
-    res.download(mp3, `${jobDate(j)}-meeting-audio.mp3`);
+    const m = await plaintextMp3(j);
+    res.download(m.path, `${jobDate(j)}-meeting-audio.mp3`, () => m.cleanup());
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Could not produce mp3: ' + e.message });
@@ -803,19 +892,26 @@ app.get('/api/jobs/:id/download/all.zip', (req, res) => {
   res.set('Content-Type', 'application/zip');
   res.set('Content-Disposition', `attachment; filename="${date}-meeting-bundle.zip"`);
 
+  const temps = [];
+  const cleanupAll = () => temps.forEach((t) => t.cleanup());
   const archive = archiver('zip', { zlib: { level: 9 } });
   archive.on('error', (err) => {
     console.error('Zip error:', err.message);
+    cleanupAll();
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else res.destroy();
   });
+  archive.on('end', cleanupAll);
+  res.on('close', cleanupAll);
   archive.pipe(res);
 
-  if (j.markdown) archive.append(j.markdown, { name: `${date}-meeting-summary.md` });
-  if (j.raw_transcript) archive.append(j.raw_transcript, { name: `${date}-transcript-raw.txt` });
-  if (j.cleaned_transcript) archive.append(j.cleaned_transcript, { name: `${date}-transcript-cleaned.txt` });
+  if (j.markdown) archive.append(decJobText(j, j.markdown), { name: `${date}-meeting-summary.md` });
+  if (j.raw_transcript) archive.append(decJobText(j, j.raw_transcript), { name: `${date}-transcript-raw.txt` });
+  if (j.cleaned_transcript) archive.append(decJobText(j, j.cleaned_transcript), { name: `${date}-transcript-cleaned.txt` });
   if (j.audio_path && fs.existsSync(j.audio_path)) {
-    archive.file(j.audio_path, { name: `${date}-meeting-audio${path.extname(j.audio_path)}` });
+    const a = plaintextAudio(j);
+    temps.push(a);
+    archive.file(a.path, { name: `${date}-meeting-audio${path.extname(j.audio_path)}` });
   }
   archive.finalize();
 });
@@ -874,11 +970,24 @@ app.get('/api/admin/usage', (req, res) => {
   const users = jobs.listUsers().map((u) => {
     const r = byId.get(u.id) || { mins: 0, jobs: 0 };
     return {
-      email: u.email, isAdmin: !!u.is_admin, minutesUsed: +(+r.mins).toFixed(2), jobs: r.jobs,
-      createdAt: u.created_at, lastLoginAt: u.last_login_at,
+      id: u.id, email: u.email, isAdmin: !!u.is_admin, minutesUsed: +(+r.mins).toFixed(2), jobs: r.jobs,
+      createdAt: u.created_at, lastLoginAt: u.last_login_at, suspended: !!u.suspended_at,
     };
   });
   res.json({ month: new Date(monthStartMs()).toISOString().slice(0, 7), minutesLimit: QUOTA_MINUTES, users });
+});
+
+// Admin: suspend / unsuspend an account (blocks the user's sessions at auth).
+app.post('/api/admin/users/:id/suspend', (req, res) => {
+  if (!auth.enabled || !req.user || !req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
+  const target = jobs.getUserById(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.id === req.user.id) return res.status(400).json({ error: "You can't suspend your own account" });
+  const suspended = !!(req.body && req.body.suspended);
+  jobs.setUserSuspended(target.id, suspended);
+  // No need to purge sessions: the auth middleware rejects suspended users on
+  // their very next request.
+  res.json({ ok: true, suspended });
 });
 
 // Admin: export ONLY the addresses that currently agree to product marketing
@@ -900,6 +1009,7 @@ app.get('/api/admin/marketing.csv', (req, res) => {
 // ---------- Route: process recording + attachments ----------
 app.post(
   '/api/process',
+  rateLimitUploads,
   upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'attachments', maxCount: 10 }]),
   async (req, res) => {
     const tempPaths = [];
@@ -962,10 +1072,25 @@ app.get('/api/config', (req, res) => {
   res.json({
     segmentMinutes: SEGMENT_MINUTES,
     segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000),
-    retentionDays: RETENTION_DAYS,
+    retentionDays: RETENTION_DAYS_EFFECTIVE,
     models,
     defaultModel: firstAvailable,
+    // Public deployments (auth on) require a per-upload consent tick.
+    requireUploadConsent: auth.enabled,
+    encryptedAtRest: cs.enabled,
   });
+});
+
+// ---------- Abuse report (Phase 5.5, light moderation) ----------
+app.post('/api/report', (req, res) => {
+  const { jobId, reason, contact } = req.body || {};
+  if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'A reason is required' });
+  const reporter = (auth.enabled && req.user && req.user.email) || contact || null;
+  const row = jobs.addReport({ job_id: jobId || null, reporter, reason: String(reason).slice(0, 2000) });
+  console.warn(`ABUSE REPORT ${row.id} — job=${row.job_id || '-'} by=${reporter || 'anon'}: ${row.reason}`);
+  // Best-effort admin email if Resend is configured (auth.js already wraps it).
+  if (typeof auth.notifyAdmins === 'function') auth.notifyAdmins('Content reported', `${row.reason}\n\njob=${row.job_id}\nby=${reporter}`).catch(() => {});
+  res.json({ ok: true });
 });
 
 // ---------- Live-recording session routes (segment pipeline) ----------
@@ -1008,7 +1133,7 @@ app.post('/api/session/resume', (req, res) => {
 // context and cut code-switched sentences. We now keep only the audio here and
 // transcribe the whole recording in ONE Soniox pass at finalize. Index-named
 // files keep segments in order and make re-uploads (crash recovery) idempotent.
-app.post('/api/transcribe-chunk', upload.single('audio'), (req, res) => {
+app.post('/api/transcribe-chunk', rateLimitUploads, upload.single('audio'), (req, res) => {
   try {
     const dir = sessionDir(req.body.sessionId);
     if (!fs.existsSync(dir)) return res.status(400).json({ error: 'Unknown or expired session' });
@@ -1062,7 +1187,10 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
     } else {
       await ffmpegConcat(segPaths, finalPath);
     }
-    const size = fs.statSync(finalPath).size;
+    const size = fs.statSync(finalPath).size; // plaintext size (before encryption)
+    const uid = currentUserId(req);
+    const dek = cs.enabled ? dekFor(uid) : null;
+    if (cs.enabled) cs.encryptFileInPlace(dek, finalPath);
 
     // Persist attachments beside the job for the worker to fold into the summary.
     const attachmentFiles = (req.files && req.files.attachments) || [];
@@ -1072,15 +1200,18 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
       fs.mkdirSync(adir, { recursive: true });
       const meta = attachmentFiles.map((f, i) => {
         const file = `${i}${path.extname(f.originalname) || ''}`;
-        fs.copyFileSync(f.path, path.join(adir, file));
+        const dest = path.join(adir, file);
+        fs.copyFileSync(f.path, dest);
+        if (cs.enabled) cs.encryptFileInPlace(dek, dest);
         return { file, mimetype: f.mimetype };
       });
       fs.writeFileSync(path.join(adir, 'meta.json'), JSON.stringify(meta));
     }
 
+    const consentAt = req.body && req.body.consent === '1' ? Date.now() : null;
     const job = jobs.createJob({
       id: jobId,
-      user_id: currentUserId(req),
+      user_id: uid,
       original_name: `live-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`,
       mime: `audio/${ext.slice(1)}`,
       size_bytes: size,
@@ -1088,6 +1219,8 @@ app.post('/api/finalize', upload.fields([{ name: 'attachments', maxCount: 10 }])
       status: 'uploaded',
       audio_path: finalPath,
       stt_provider: resolveProvider(req.body && req.body.model),
+      encrypted: cs.enabled ? 1 : 0,
+      upload_consent_at: consentAt,
     });
 
     // Session audio is now assembled into the job; drop the segment store.

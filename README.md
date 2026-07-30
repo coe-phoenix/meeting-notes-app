@@ -153,6 +153,34 @@ per-user accounts:
   weaker than an opt-in under PDPA — the unsubscribe path is what keeps it
   defensible; confirm with compliance before using the list.
 
+## Going public (Phase 5.5)
+
+Extra protections for a multi-tenant / public deployment. Encryption is
+**feature-flagged and off by default**, so existing single-user boxes are unchanged.
+
+- **Encryption at rest** (`cryptostore.js`): envelope encryption — a server
+  `MASTER_KEY` wraps a random **per-user data key**; that key AES-256-GCM-encrypts
+  the user's **audio, attachments, transcripts, and summary** on disk and in the DB.
+  Turn on with `ENCRYPT_AT_REST=1` + a base64 32-byte `MASTER_KEY`
+  (`openssl rand -base64 32`). Content is decrypted only in memory — to send to
+  Soniox/Gemini/Claude, or to serve an authenticated download. Legacy plaintext
+  jobs keep working (a per-job `encrypted` flag + an `enc1:` text marker), so the
+  flag can be flipped without a migration. Rotate the master key with
+  `OLD_MASTER_KEY=… NEW_MASTER_KEY=… node rotate-master-key.mjs` (re-wraps data
+  keys only; documented, take a DB backup first). Not zero-knowledge — the server
+  must see plaintext to process — this protects a **stolen disk/DB snapshot**.
+- **Upload rate limiting** (`ratelimit.js`): `UPLOAD_RATE_PER_HOUR` (default 60)
+  per user/IP on the upload endpoints → `429`, independent of the minutes quota.
+- **Admin suspend**: suspended accounts are blocked at auth (`POST
+  /api/admin/users/:id/suspend`); toggle from the Admin view.
+- **Public retention ceiling**: `PUBLIC_RETENTION_DAYS` (default 14) caps the
+  effective retention when auth is on.
+- **Consent + moderation (light)**: a per-upload "I have consent to record
+  everyone" checkbox (required in public mode, stamped per job); a draft
+  **Terms** page (`#/terms`, review with counsel); and a **Report content**
+  action (`POST /api/report`) that logs to a `reports` table (+ admin email if
+  Resend is set).
+
 ## Endpoints
 
 - `GET /` — the UI
@@ -168,12 +196,16 @@ per-user accounts:
 - **Downloads:** `GET /api/jobs/:id/download/summary.md` · `…/transcript.txt` (raw) · `…/transcript-cleaned.txt` · `…/audio` (original) · `…/audio.mp3` · `…/all.zip`
 - `POST /api/send-telegram` — JSON `{ markdown }`
 - **Auth (AUTH=magic):** `POST /api/auth/request` (email → magic link) · `GET /auth/verify?token=` (sets session cookie) · `POST /api/auth/logout`
-- **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` (JSON `{ marketing }`) · `POST /api/me/marketing` (JSON `{ optIn }` — unsubscribe/re-subscribe) · `DELETE /api/me` (delete account + all data) · `GET /api/admin/usage` (admin only) · `GET /api/admin/marketing.csv` (admin only — opted-in emails)
+- **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` (JSON `{ marketing }`) · `POST /api/me/marketing` (JSON `{ optIn }` — unsubscribe/re-subscribe) · `DELETE /api/me` (delete account + all data)
+- **Admin:** `GET /api/admin/usage` · `GET /api/admin/marketing.csv` (opted-in emails) · `POST /api/admin/users/:id/suspend` (JSON `{ suspended }`)
+- **Public/abuse (Phase 5.5):** `POST /api/report` (JSON `{ jobId?, reason }`)
 
 ## Tests
 
 The Playwright/HTTP suites require the server running on `:3000`: `PORT=3000 node server.js`.
 
+- `npm run test:crypto` — envelope-encryption round-trips + GCM tamper rejection
+  (`cryptostore.js`; no server needed).
 - `npm run test:prompts` — pure unit tests for the faithfulness parse/score logic
   in `prompts.js` (no server or API key needed).
 - `npm run test:phase1` — Playwright (fake mic, stubbed APIs): recording heartbeat/meter,
@@ -184,6 +216,10 @@ The Playwright/HTTP suites require the server running on `:3000`: `PORT=3000 nod
   faithfulness verdict on the job detail.
 - `npm run test:phase5` — **Phase 5**: spawns its own `AUTH=magic` server on a
   throwaway DB/port and verifies magic-link login, per-user job isolation, the
-  monthly quota block, and account deletion. Self-contained (no `:3000`, no email).
-- `npm test` — runs all four suites.
+  monthly quota block, account deletion, and the marketing opt-in export.
+  Self-contained (no `:3000`, no email).
+- `npm run test:phase55` — **Phase 5.5**: spawns its own encrypted `AUTH=magic`
+  server and verifies encryption at rest (ciphertext on disk + in the DB, downloads
+  decrypt), upload rate limiting, admin suspend, and abuse reports. Self-contained.
+- `npm test` — runs all suites (phase 1/2 still need the `:3000` server).
 - `npm run eval` — **Phase 4** eval set (needs `ANTHROPIC_API_KEY`); see above.
