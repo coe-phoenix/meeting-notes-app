@@ -1449,6 +1449,8 @@ document.getElementById('deleteAccountLink').onclick = async () => {
 
 async function renderAdmin() {
   const el = document.getElementById('adminList');
+  const fmtDay = (ms) => ms ? new Date(ms).toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: 'numeric' }) : '—';
+  const yn = (v, warnIfNo) => v ? '✓' : (warnIfNo ? '<span class="warn">—</span>' : '—');
   try {
     const res = await fetch('/api/admin/usage');
     const data = await res.json();
@@ -1456,14 +1458,23 @@ async function renderAdmin() {
     document.getElementById('adminMonth').textContent =
       `(${data.month} · cap ${data.minutesLimit > 0 ? data.minutesLimit + ' min' : 'none'})`;
     if (!data.users.length) { el.innerHTML = '<p class="muted">No users yet.</p>'; return; }
-    el.innerHTML = '<table class="usage"><thead><tr><th>User</th><th class="num">Minutes</th><th class="num">Jobs</th><th></th></tr></thead><tbody>'
+    const summary = `<p class="muted" style="margin:0 0 10px;">${data.userCount} user(s) · ${data.activeThisMonth} active this month · ${data.marketingOptIns} opted in to emails</p>`;
+    el.innerHTML = summary
+      + '<div style="overflow-x:auto;"><table class="usage"><thead><tr>'
+      + '<th>User</th><th>Signed up</th><th>Last login</th><th>Consent</th><th>Emails</th>'
+      + '<th class="num">This month</th><th class="num">Total min</th><th></th>'
+      + '</tr></thead><tbody>'
       + data.users.map((u) => `<tr>
-          <td>${escapeHtml(u.email)}${u.isAdmin ? ' · admin' : ''}${u.suspended ? ' · <span class="warn">suspended</span>' : ''}</td>
-          <td class="num">${fmtMins(u.minutesUsed)}</td>
-          <td class="num">${u.jobs}</td>
+          <td>${escapeHtml(u.email)}${u.isAdmin ? ' · <span class="muted">admin</span>' : ''}${u.suspended ? ' · <span class="warn">suspended</span>' : ''}</td>
+          <td>${fmtDay(u.createdAt)}</td>
+          <td>${fmtDay(u.lastLoginAt)}</td>
+          <td>${yn(u.consentAt, true)}</td>
+          <td>${yn(u.marketingOptIn, false)}</td>
+          <td class="num">${fmtMins(u.monthMinutes)} min · ${u.monthJobs}j</td>
+          <td class="num">${fmtMins(u.totalMinutes)}</td>
           <td class="num">${u.isAdmin ? '' : `<a class="link" data-suspend="${u.id}" data-to="${u.suspended ? '0' : '1'}">${u.suspended ? 'Unsuspend' : 'Suspend'}</a>`}</td>
         </tr>`).join('')
-      + '</tbody></table>';
+      + '</tbody></table></div>';
     el.querySelectorAll('a[data-suspend]').forEach((a) => {
       a.onclick = async () => {
         const suspend = a.dataset.to === '1';

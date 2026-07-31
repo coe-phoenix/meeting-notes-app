@@ -963,18 +963,31 @@ app.delete('/api/me', (req, res) => {
   res.json({ ok: true, deletedJobs: userJobs.length });
 });
 
-// Admin: transcribed-minutes usage across all users this month.
+// Admin: the registered-users table — signup/consent/marketing + this-month and
+// lifetime usage. usage_events survive job retention, so lifetime totals are real.
 app.get('/api/admin/usage', (req, res) => {
   if (!auth.enabled || !req.user || !req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
-  const byId = new Map(jobs.usageByUserSince(monthStartMs()).map((r) => [r.user_id, r]));
+  const monthById = new Map(jobs.usageByUserSince(monthStartMs()).map((r) => [r.user_id, r]));
+  const allById = new Map(jobs.usageByUserSince(0).map((r) => [r.user_id, r]));
   const users = jobs.listUsers().map((u) => {
-    const r = byId.get(u.id) || { mins: 0, jobs: 0 };
+    const m = monthById.get(u.id) || { mins: 0, jobs: 0 };
+    const a = allById.get(u.id) || { mins: 0, jobs: 0 };
     return {
-      id: u.id, email: u.email, isAdmin: !!u.is_admin, minutesUsed: +(+r.mins).toFixed(2), jobs: r.jobs,
-      createdAt: u.created_at, lastLoginAt: u.last_login_at, suspended: !!u.suspended_at,
+      id: u.id, email: u.email, isAdmin: !!u.is_admin, suspended: !!u.suspended_at,
+      createdAt: u.created_at, lastLoginAt: u.last_login_at,
+      consentAt: u.consent_at, marketingOptIn: !!u.marketing_consent_at,
+      monthMinutes: +(+m.mins).toFixed(2), monthJobs: m.jobs,
+      totalMinutes: +(+a.mins).toFixed(2), totalJobs: a.jobs,
     };
   });
-  res.json({ month: new Date(monthStartMs()).toISOString().slice(0, 7), minutesLimit: QUOTA_MINUTES, users });
+  res.json({
+    month: new Date(monthStartMs()).toISOString().slice(0, 7),
+    minutesLimit: QUOTA_MINUTES,
+    userCount: users.length,
+    activeThisMonth: users.filter((u) => u.monthJobs > 0).length,
+    marketingOptIns: users.filter((u) => u.marketingOptIn).length,
+    users,
+  });
 });
 
 // Admin: suspend / unsuspend an account (blocks the user's sessions at auth).
