@@ -1326,8 +1326,16 @@ function paintAccountBar(me) {
   accountBar.classList.remove('hidden');
 }
 
+// Label the toggle by the ACTION it performs, not an ambiguous on/off state.
 function paintMarketingLink(optedIn) {
-  document.getElementById('marketingLink').textContent = optedIn ? 'Emails: on' : 'Emails: off';
+  const el = document.getElementById('marketingLink');
+  if (optedIn) {
+    el.textContent = 'Unsubscribe from updates';
+    el.title = "You're subscribed to occasional product-update emails. Click to unsubscribe.";
+  } else {
+    el.textContent = 'Get product updates';
+    el.title = 'Click to receive occasional product-update emails. Unsubscribe anytime.';
+  }
 }
 
 // Unsubscribe / re-subscribe to product updates (the withdraw path).
