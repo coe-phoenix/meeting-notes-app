@@ -136,8 +136,12 @@ function attach(app, db) {
     const row = raw && db.consumeLoginToken(sha256(raw));
     if (!row) return res.redirect('/?login=expired');
 
+    const wantAdmin = ADMIN_EMAILS.has(row.email) ? 1 : 0;
     let user = db.getUserByEmail(row.email);
-    if (!user) user = db.createUser({ email: row.email, is_admin: ADMIN_EMAILS.has(row.email) ? 1 : 0 });
+    if (!user) user = db.createUser({ email: row.email, is_admin: wantAdmin });
+    // ADMIN_EMAILS is the source of truth: re-sync admin status on every login so
+    // adding/removing an email takes effect on the user's next sign-in.
+    else if (user.is_admin !== wantAdmin) user = db.setUserAdmin(user.id, wantAdmin);
     db.setUserLastLogin(user.id);
 
     const sessionToken = crypto.randomBytes(32).toString('hex');

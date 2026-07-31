@@ -200,6 +200,7 @@ const authStmts = {
                                WHERE marketing_consent_at IS NOT NULL ORDER BY marketing_consent_at ASC`),
   setLastLogin: db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`),
   setSuspended: db.prepare(`UPDATE users SET suspended_at = ? WHERE id = ?`),
+  setAdmin: db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`),
   delUser: db.prepare(`DELETE FROM users WHERE id = ?`),
 
   // Phase 5.5 — per-user wrapped data keys + abuse reports.
@@ -257,6 +258,8 @@ function listMarketingOptIns() { return authStmts.marketingOptIns.all(); }
 function setUserLastLogin(id) { authStmts.setLastLogin.run(now(), id); }
 // Admin suspend/unsuspend (Phase 5.5). Suspended users can't authenticate.
 function setUserSuspended(id, suspended) { authStmts.setSuspended.run(suspended ? now() : null, id); return getUserById(id); }
+// Keep is_admin in sync with ADMIN_EMAILS on login (env is the source of truth).
+function setUserAdmin(id, isAdmin) { authStmts.setAdmin.run(isAdmin ? 1 : 0, id); return getUserById(id); }
 
 // ---------- Phase 5.5: data keys + reports ----------
 // db stays crypto-agnostic: the server wraps/unwraps; here we just persist the
@@ -382,8 +385,9 @@ module.exports = {
   hasUsageForJob,
   purgeExpiredAuth,
   deleteUserCompletely,
-  // Phase 5.5 — suspend, data keys, reports
+  // Phase 5.5 — suspend, admin sync, data keys, reports
   setUserSuspended,
+  setUserAdmin,
   getDataKey,
   saveDataKey,
   rewrapDataKey,
