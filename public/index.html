@@ -42,6 +42,7 @@
   .timer { font-variant-numeric: tabular-nums; font-weight:600; }
   .warn { color:#e2c455; }
   .good { color:#4caf50; }
+  .banner-ok { background:#123a1a; color:#8fe0a0; border:1px solid #1e5c30; border-radius:8px; padding:12px; font-size:0.9rem; margin-top:12px; }
   nav { display:flex; gap:8px; margin:8px 0 16px; }
   nav a { color:#c8c8cc; text-decoration:none; font-size:0.9rem; font-weight:600; padding:6px 12px; border-radius:8px; background:#1a1d24; border:1px solid #2a2e37; }
   nav a.active { background:#5b8def; color:#fff; border-color:#5b8def; }
@@ -102,6 +103,10 @@
            style="width:100%; box-sizing:border-box; font-size:16px; padding:12px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     <button class="btn-primary" id="loginBtn" style="margin-top:12px;">Email me a sign-in link</button>
     <div class="status" id="loginStatus"></div>
+    <div class="banner-ok hidden" id="loginSent">
+      ✓ Check your email for a sign-in link — you can close this tab.
+      <div style="margin-top:6px;"><a class="link" id="loginReset">Use a different email</a></div>
+    </div>
   </div>
 </div>
 
@@ -1365,6 +1370,7 @@ document.getElementById('loginBtn').onclick = async () => {
   const email = document.getElementById('loginEmail').value.trim();
   const status = document.getElementById('loginStatus');
   const btn = document.getElementById('loginBtn');
+  const emailInput = document.getElementById('loginEmail');
   if (!email) { status.textContent = 'Enter your email.'; return; }
   btn.disabled = true; status.textContent = 'Sending…';
   try {
@@ -1373,13 +1379,31 @@ document.getElementById('loginBtn').onclick = async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not send link');
-    status.textContent = 'Check your email for a sign-in link — you can close this tab.';
+    // Success: lock the form so it can't be re-submitted, and show a clear banner.
+    // The button STAYS disabled — the only way forward is the emailed link (or
+    // "Use a different email" to start over).
+    status.textContent = '';
+    btn.textContent = 'Link sent ✓';
+    emailInput.disabled = true;
+    document.getElementById('loginSent').classList.remove('hidden');
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
-  } finally { btn.disabled = false; }
+    btn.disabled = false; // re-enable only so they can retry after a failure
+  }
+};
+document.getElementById('loginReset').onclick = () => {
+  const btn = document.getElementById('loginBtn');
+  document.getElementById('loginSent').classList.add('hidden');
+  document.getElementById('loginStatus').textContent = '';
+  const emailInput = document.getElementById('loginEmail');
+  emailInput.disabled = false;
+  emailInput.value = '';
+  emailInput.focus();
+  btn.disabled = false;
+  btn.textContent = 'Email me a sign-in link';
 };
 document.getElementById('loginEmail').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('loginBtn').click();
+  if (e.key === 'Enter' && !document.getElementById('loginBtn').disabled) document.getElementById('loginBtn').click();
 });
 
 const consentCheck = document.getElementById('consentCheck');
