@@ -296,6 +296,7 @@
       <input id="pipeModelCustom" placeholder="or custom id" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     </div>
     <label style="margin-top:12px;">Instructions (editable)</label>
+    <div id="pipeStaleWarn" class="hidden warn" style="font-size:0.85rem; margin:2px 0 6px;">⚠ These saved instructions are outdated — they don't use the current file format, so runs won't produce a repo. Click “Reset instructions to default”, then Save.</div>
     <textarea id="pipeInstructions" style="min-height:200px;"></textarea>
     <div class="btn-row">
       <button class="btn-secondary" id="pipeSaveBtn">Save pipeline settings</button>
@@ -1583,6 +1584,9 @@ async function loadPipelineConfig() {
     else document.getElementById('pipeModelCustom').value = c.model;
     document.getElementById('pipeInstructions').value = c.instructions;
     window.__pipeDefault = c.defaultInstructions || '';
+    // Flag saved instructions that predate the current file-manifest format.
+    const stale = !String(c.instructions || '').includes('<<<<FILE:');
+    document.getElementById('pipeStaleWarn').classList.toggle('hidden', !stale);
     document.getElementById('pipelineGh').textContent = c.githubReady
       ? `· GitHub connected${c.owner ? ' (' + c.owner + ')' : ''}`
       : '· GITHUB_TOKEN not set — runs will generate code but skip the repo/PR';
