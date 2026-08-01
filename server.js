@@ -1159,7 +1159,11 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
     const manifest = pipeline.parseManifest(full);
     if (!manifest) { send('done', { prUrl: null, note: 'No file manifest was produced — showing the generated text only.' }); return res.end(); }
-    if (!GITHUB_TOKEN) { send('done', { prUrl: null, note: `GITHUB_TOKEN not set on the server — skipped repo creation (${manifest.files.length} files were generated).` }); return res.end(); }
+    const filePaths = manifest.files.map((f) => f.path);
+    if (!GITHUB_TOKEN) {
+      send('done', { prUrl: null, repo: manifest.repo, files: filePaths, note: 'GITHUB_TOKEN not set on the server — skipped repo creation.' });
+      return res.end();
+    }
 
     send('status', { message: `Creating a private repo + PR with ${manifest.files.length} file(s)…` });
     const name = `${manifest.repo}-${Date.now().toString(36)}`;
@@ -1167,7 +1171,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
       prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary,
     });
-    send('done', { prUrl, repoUrl });
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });

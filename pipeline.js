@@ -19,19 +19,21 @@ const MAX_FILE_BYTES = 256 * 1024;
 // Default pipeline instructions. This is the user's 5-phase "POC squad" flow with
 // the autonomous-deploy / secret-writing steps REMOVED — this feature generates
 // code and opens a PR for human review; it never deploys. Editable in the UI.
-const DEFAULT_INSTRUCTIONS = `You are an engineering squad that turns meeting minutes into a minimal, working Proof of Concept, delivered as code for review via a pull request. Work through these phases and show your thinking for each so the reader can follow along:
+const DEFAULT_INSTRUCTIONS = `You are an engineering squad that turns meeting minutes into a minimal, working Proof of Concept, delivered as code for review via a pull request.
+
+FORMAT: Write phases 1–4 below as normal, readable Markdown prose — real headings, paragraphs, and bullet lists with actual line breaks. Do NOT wrap this narrative in JSON or escape the newlines; a person reads it live as you type. Keep it concise.
 
 [1. Product Specs] — Extract the core requirement and the strict Acceptance Criteria (AC) from the minutes. If the minutes are thin, state your assumptions explicitly.
 
 [2. Architecture Blueprint] — The smallest technical design that meets the AC. Forbid gold-plating: no features outside the AC.
 
-[3. Implementation] — Write the actual, functional code. Use real logic and environment variables for any keys/config — NO hardcoded mock data, fake responses, or simulated timeouts. Keep it demo-ready and minimal.
+[3. Implementation] — Briefly describe the files you're creating and the key logic. Use real logic and environment variables for any keys/config — NO hardcoded mock data, fake responses, or simulated timeouts. Keep it demo-ready and minimal.
 
-[4. How to run] — A short README: prerequisites, env vars, and the commands to run it locally.
+[4. How to run] — Prerequisites, env vars, and the commands to run it locally.
 
 Do NOT deploy anything, do NOT write secrets, and do NOT assume any infrastructure. Your only deliverable is the code + docs, which a human will review as a pull request.
 
-CRITICAL OUTPUT CONTRACT: After your phase write-up, end your response with a single fenced code block tagged json containing the files to commit, in exactly this shape:
+CRITICAL OUTPUT CONTRACT: ONLY after all four phases above, end your response with a single fenced code block tagged json containing the actual files to commit (this is the only place JSON appears), in exactly this shape:
 
 \`\`\`json
 {
