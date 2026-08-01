@@ -5,14 +5,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test-crypto.mjs && node test-prompts.mjs && node test-phase1.mjs && node test-phase2.mjs && node test-phase5.mjs && node test-phase55.mjs",
+    "test": "node test-crypto.mjs && node test-prompts.mjs && node test-pipeline.mjs && node test-phase1.mjs && node test-phase2.mjs && node test-phase5.mjs && node test-phase55.mjs",
     "test:crypto": "node test-crypto.mjs",
     "test:prompts": "node test-prompts.mjs",
     "test:phase1": "node test-phase1.mjs",
     "test:phase2": "node test-phase2.mjs",
     "test:phase5": "node test-phase5.mjs",
     "test:phase55": "node test-phase55.mjs",
-    "eval": "node eval/run-eval.mjs"
+    "eval": "node eval/run-eval.mjs",
+    "test:pipeline": "node test-pipeline.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

@@ -16,6 +16,8 @@ const auth = require('./auth');
 const gemini = require('./gemini');
 const cs = require('./cryptostore');
 const ratelimit = require('./ratelimit');
+const pipeline = require('./pipeline');
+const github = require('./github');
 
 const execFileP = promisify(execFile);
 
@@ -64,6 +66,10 @@ const LANGUAGE_HINTS = ['en', 'ms', 'zh'];
 // Gemini's current audio-capable models without a code change.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// Admin AI-pipeline (generate a POC from meeting minutes → GitHub PR).
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_OWNER = process.env.GITHUB_OWNER || ''; // optional org/user; else the token's user
 
 // The UI masks providers as "Model 1" / "Model 2". Keep the mapping server-side.
 const MODEL_TO_PROVIDER = { model1: 'soniox', model2: 'gemini' };
@@ -1084,6 +1090,90 @@ app.get('/api/admin/marketing.csv', (req, res) => {
     .join('\n');
   const date = new Date().toISOString().slice(0, 10);
   sendDownload(res, `${date}-marketing-optin-emails.csv`, 'text/csv', csv + '\n');
+});
+
+// ---------- Admin AI pipeline: minutes → live Claude run → GitHub PR ----------
+function requireAdmin(req, res) {
+  if (!auth.enabled || !req.user || !req.user.is_admin) { res.status(403).json({ error: 'Admin only' }); return false; }
+  return true;
+}
+
+// Read/write the editable instructions + chosen model.
+app.get('/api/admin/pipeline/config', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json({
+    instructions: jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS,
+    model: jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL,
+    models: pipeline.MODELS,
+    githubReady: !!GITHUB_TOKEN,
+    owner: GITHUB_OWNER || null,
+  });
+});
+app.post('/api/admin/pipeline/config', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { instructions, model } = req.body || {};
+  if (typeof instructions === 'string') jobs.setSetting('pipeline_instructions', instructions);
+  if (typeof model === 'string' && model.trim()) jobs.setSetting('pipeline_model', model.trim());
+  res.json({ ok: true });
+});
+
+// Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
+// completion, parse the file manifest and open a PR in a new private repo.
+app.get('/api/admin/pipeline/stream', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured on the server' });
+  const j = jobs.getJob(req.query.jobId);
+  if (!j || j.user_id !== currentUserId(req)) return res.status(404).json({ error: 'Job not found' });
+
+  const md = decJobText(j, j.markdown) || '';
+  const cleaned = decJobText(j, j.cleaned_transcript) || decJobText(j, j.raw_transcript) || '';
+  const minutes = `# Meeting summary\n${md}\n\n# Transcript\n${cleaned}`.trim();
+  if (md === '' && cleaned === '') return res.status(400).json({ error: 'This job has no minutes yet' });
+
+  const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
+  const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
+
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // don't let nginx buffer the stream
+  });
+  res.flushHeaders();
+  const send = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ } };
+
+  let stream = null;
+  req.on('close', () => { if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
+
+  send('status', { message: `Running ${model} on the meeting minutes…` });
+  let full = '';
+  try {
+    stream = anthropic.messages.stream({
+      model,
+      max_tokens: 16000,
+      system: instructions,
+      messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
+    });
+    stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
+    await stream.finalMessage();
+
+    const manifest = pipeline.parseManifest(full);
+    if (!manifest) { send('done', { prUrl: null, note: 'No file manifest was produced — showing the generated text only.' }); return res.end(); }
+    if (!GITHUB_TOKEN) { send('done', { prUrl: null, note: `GITHUB_TOKEN not set on the server — skipped repo creation (${manifest.files.length} files were generated).` }); return res.end(); }
+
+    send('status', { message: `Creating a private repo + PR with ${manifest.files.length} file(s)…` });
+    const name = `${manifest.repo}-${Date.now().toString(36)}`;
+    const { repoUrl, prUrl } = await github.createRepoWithPR({
+      token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
+      prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary,
+    });
+    send('done', { prUrl, repoUrl });
+  } catch (err) {
+    console.error('pipeline stream failed:', err.message);
+    send('error', { error: err.message });
+  } finally {
+    res.end();
+  }
 });
 
 // ---------- Route: process recording + attachments ----------

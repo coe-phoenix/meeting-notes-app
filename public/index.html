@@ -261,6 +261,15 @@
       <button class="btn-primary" id="jobDlAll">Download all (.zip)</button>
     </div>
     <div class="status" id="jobActionStatus"></div>
+
+    <div id="pipelineWrap" class="hidden" style="margin-top:16px; border-top:1px solid #2a2e37; padding-top:16px;">
+      <label>AI Pipeline (admin)</label>
+      <p class="sub" style="margin:2px 0 8px;">Generate a POC from these minutes and open a pull request. Configure the model + instructions in the Admin page.</p>
+      <button class="btn-primary" id="pipeRunBtn">Run AI pipeline</button>
+      <div class="status" id="pipeRunStatus"></div>
+      <pre id="pipeOutput" class="hidden" style="margin-top:10px; max-height:340px; overflow:auto; background:#0f1115; border:1px solid #2a2e37; border-radius:8px; padding:12px; font-size:13px; white-space:pre-wrap; word-break:break-word;"></pre>
+      <div id="pipeResult" class="hidden banner-ok" style="margin-top:10px;"></div>
+    </div>
   </div>
 </div>
 
@@ -273,6 +282,22 @@
       <button class="btn-secondary" id="adminExportBtn">Download marketing opt-in emails (CSV)</button>
     </div>
     <p class="sub" style="margin:8px 0 0;">Only addresses that currently agree to product updates. Opt-outs are excluded automatically.</p>
+  </div>
+
+  <div class="card">
+    <label>AI Pipeline <span id="pipelineGh" class="muted"></span></label>
+    <p class="sub" style="margin:2px 0 10px;">Runs a job's minutes through Claude with the instructions below, then opens a pull request in a new private repo. Open a meeting from Jobs and click “Run AI pipeline”.</p>
+    <label style="margin-top:8px;">Model</label>
+    <div style="display:flex; gap:8px;">
+      <select id="pipeModel" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;"></select>
+      <input id="pipeModelCustom" placeholder="or custom id" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    </div>
+    <label style="margin-top:12px;">Instructions (editable)</label>
+    <textarea id="pipeInstructions" style="min-height:200px;"></textarea>
+    <div class="btn-row">
+      <button class="btn-secondary" id="pipeSaveBtn">Save pipeline settings</button>
+    </div>
+    <div class="status" id="pipeSaveStatus"></div>
   </div>
 </div>
 
@@ -1160,6 +1185,8 @@ async function renderJobDetail(id) {
       } else {
         tgRow.classList.add('hidden');
       }
+      // AI pipeline panel: admins only.
+      document.getElementById('pipelineWrap').classList.toggle('hidden', !(ME && ME.user && ME.user.isAdmin));
       readyCard.classList.remove('hidden');
     }
   } catch (e) {
@@ -1537,7 +1564,72 @@ async function renderAdmin() {
       };
     });
   } catch (e) { el.innerHTML = `<p class="warn">${escapeHtml(e.message)}</p>`; }
+  loadPipelineConfig();
 }
+
+// ---------- Admin AI pipeline ----------
+async function loadPipelineConfig() {
+  try {
+    const res = await fetch('/api/admin/pipeline/config');
+    if (!res.ok) return;
+    const c = await res.json();
+    const sel = document.getElementById('pipeModel');
+    sel.innerHTML = c.models.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+    if (c.models.includes(c.model)) sel.value = c.model;
+    else document.getElementById('pipeModelCustom').value = c.model;
+    document.getElementById('pipeInstructions').value = c.instructions;
+    document.getElementById('pipelineGh').textContent = c.githubReady
+      ? `· GitHub connected${c.owner ? ' (' + c.owner + ')' : ''}`
+      : '· GITHUB_TOKEN not set — runs will generate code but skip the repo/PR';
+  } catch { /* ignore */ }
+}
+document.getElementById('pipeSaveBtn').onclick = async () => {
+  const s = document.getElementById('pipeSaveStatus');
+  const model = document.getElementById('pipeModelCustom').value.trim() || document.getElementById('pipeModel').value;
+  s.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/admin/pipeline/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions: document.getElementById('pipeInstructions').value, model }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
+    s.textContent = 'Saved ✓';
+  } catch (e) { s.textContent = 'Error: ' + e.message; }
+};
+
+// Run the pipeline on the current job and stream the phases live via SSE.
+document.getElementById('pipeRunBtn').onclick = () => {
+  const btn = document.getElementById('pipeRunBtn');
+  const out = document.getElementById('pipeOutput');
+  const status = document.getElementById('pipeRunStatus');
+  const result = document.getElementById('pipeResult');
+  let finished = false;
+  btn.disabled = true;
+  out.textContent = ''; out.classList.remove('hidden');
+  result.classList.add('hidden'); result.innerHTML = '';
+  status.innerHTML = '<span class="spinner"></span>Starting…';
+
+  const es = new EventSource(`/api/admin/pipeline/stream?jobId=${encodeURIComponent(currentJobId)}`);
+  es.addEventListener('status', (e) => { status.innerHTML = '<span class="spinner"></span>' + escapeHtml(JSON.parse(e.data).message); });
+  es.addEventListener('delta', (e) => { out.textContent += JSON.parse(e.data).text; out.scrollTop = out.scrollHeight; });
+  es.addEventListener('done', (e) => {
+    finished = true;
+    const d = JSON.parse(e.data);
+    status.textContent = 'Done.';
+    result.innerHTML = d.prUrl
+      ? `✓ Pull request created — <a class="link" href="${escapeHtml(d.prUrl)}" target="_blank" rel="noopener">View pull request →</a>`
+      : escapeHtml(d.note || 'Finished.');
+    result.classList.remove('hidden');
+    es.close(); btn.disabled = false;
+  });
+  es.addEventListener('error', (e) => {
+    if (finished) return; // benign close after done
+    let msg = 'Connection lost — check the server logs.';
+    try { if (e.data) msg = JSON.parse(e.data).error; } catch { /* native error, no data */ }
+    status.textContent = 'Error: ' + msg;
+    es.close(); btn.disabled = false;
+  });
+};
 
 // Decide what to show based on /api/me. Runs on load and after login/consent/logout.
 async function init() {

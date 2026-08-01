@@ -88,6 +88,12 @@ db.exec(`
     reason     TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  -- Simple key/value app settings (admin-editable, e.g. the AI-pipeline prompt).
+  CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 // Lightweight migrations: add columns introduced after a DB was first created.
@@ -275,6 +281,15 @@ function saveDataKey(userId, wrapped) {
 }
 function rewrapDataKey(userId, wrapped) { authStmts.updateDataKey.run(wrapped, userId); }
 function listDataKeys() { return authStmts.allDataKeys.all(); }
+// ---------- App settings (key/value) ----------
+const settingsStmts = {
+  get: db.prepare(`SELECT value FROM settings WHERE key = ?`),
+  set: db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @updated_at)
+                   ON CONFLICT(key) DO UPDATE SET value = @value, updated_at = @updated_at`),
+};
+function getSetting(key) { const r = settingsStmts.get.get(key); return r ? r.value : null; }
+function setSetting(key, value) { settingsStmts.set.run({ key, value, updated_at: now() }); return value; }
+
 function addReport({ job_id, reporter, reason }) {
   const row = { id: crypto.randomUUID(), job_id: job_id || null, reporter: reporter || null, reason, created_at: now() };
   authStmts.insertReport.run(row);
@@ -399,4 +414,6 @@ module.exports = {
   listDataKeys,
   addReport,
   listReports,
+  getSetting,
+  setSetting,
 };

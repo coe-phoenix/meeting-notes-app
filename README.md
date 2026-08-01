@@ -181,6 +181,27 @@ Extra protections for a multi-tenant / public deployment. Encryption is
   action (`POST /api/report`) that logs to a `reports` table (+ admin email if
   Resend is set).
 
+## Admin AI pipeline (meeting → POC → GitHub PR)
+
+Admin-only. Turns a meeting's minutes into a small, working proof-of-concept and
+opens a pull request for review — the human gate is the PR; nothing deploys
+automatically.
+
+- **Editable instructions + model** (Admin page → *AI Pipeline*): a prompt you can
+  edit (`settings` table, key `pipeline_instructions`) and a model picker
+  (curated Claude ids + a custom field, key `pipeline_model`). Defaults live in
+  `pipeline.js` — the 5-phase POC prompt with the auto-deploy / secret-writing
+  steps removed.
+- **Live run** (a job's detail → *Run AI pipeline*): streams the phases over SSE
+  (`GET /api/admin/pipeline/stream?jobId=`) so you watch the AI work in real time,
+  then parses the required JSON file-manifest and, via `github.js`, creates a
+  **new private repo**, commits the files to a `poc` branch, and **opens a PR**.
+  Set `GITHUB_TOKEN` (repo scope) and optionally `GITHUB_OWNER`. Without a token,
+  it still streams the code but skips the repo.
+- **Guardrails** (a transcript is untrusted input): admin-only; new **private**
+  repo per run; code behind a **PR** (no auto-merge); **no auto-deploy**; path
+  traversal/absolute paths rejected; ≤40 files, ≤256 KB each.
+
 ## Endpoints
 
 - `GET /` — the UI
@@ -199,6 +220,7 @@ Extra protections for a multi-tenant / public deployment. Encryption is
 - **Account:** `GET /api/me` (identity + quota + consent; public — reports auth state) · `POST /api/me/consent` (JSON `{ marketing }`) · `POST /api/me/marketing` (JSON `{ optIn }` — unsubscribe/re-subscribe) · `DELETE /api/me` (delete account + all data)
 - **Admin:** `GET /api/admin/usage` · `GET /api/admin/marketing.csv` (opted-in emails) · `POST /api/admin/users/:id/suspend` (JSON `{ suspended }`)
 - **Public/abuse (Phase 5.5):** `POST /api/report` (JSON `{ jobId?, reason }`)
+- **Admin AI pipeline:** `GET`/`POST /api/admin/pipeline/config` · `GET /api/admin/pipeline/stream?jobId=` (SSE)
 
 ## Tests
 
