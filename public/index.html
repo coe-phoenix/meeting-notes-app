@@ -43,6 +43,7 @@
   .warn { color:#e2c455; }
   .good { color:#4caf50; }
   .banner-ok { background:#123a1a; color:#8fe0a0; border:1px solid #1e5c30; border-radius:8px; padding:12px; font-size:0.9rem; margin-top:12px; }
+  .help { cursor:help; color:#9a9aa2; border:1px solid #3a4050; border-radius:50%; width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center; font-size:11px; line-height:1; }
   nav { display:flex; gap:8px; margin:8px 0 16px; }
   nav a { color:#c8c8cc; text-decoration:none; font-size:0.9rem; font-weight:600; padding:6px 12px; border-radius:8px; background:#1a1d24; border:1px solid #2a2e37; }
   nav a.active { background:#5b8def; color:#fff; border-color:#5b8def; }
@@ -229,7 +230,21 @@
     <textarea id="jobMarkdown"></textarea>
     <div class="btn-row">
       <button class="btn-secondary" id="jobSaveBtn">Save edits</button>
-      <button class="btn-primary" id="jobSendBtn">Send to Telegram</button>
+    </div>
+
+    <div id="tgRow" class="hidden" style="margin-top:16px;">
+      <label style="display:flex; align-items:center; gap:6px;">Telegram destination
+        <span class="help" title="How to get your chat ID:&#10;1. In Telegram, send any message to your bot (or add the bot to your channel as an admin).&#10;2. Open https://api.telegram.org/bot&lt;YOUR_BOT_TOKEN&gt;/getUpdates in a browser.&#10;3. Copy the numeric &quot;chat.id&quot; (personal chats are positive numbers; channels look like -100...).&#10;Paste it here and Save — it's remembered as your default destination.">&#9432;</span>
+      </label>
+      <div style="display:flex; gap:8px;">
+        <input id="tgChatId" placeholder="e.g. 123456789 or -1001234567890" inputmode="text"
+               style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+        <button class="btn-secondary" id="tgSaveBtn" style="white-space:nowrap;">Save</button>
+      </div>
+      <div class="status" id="tgSaveStatus"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary" id="jobSendBtn">Send bundle to Telegram</button>
     </div>
 
     <label style="margin-top:16px;">Downloads</label>
@@ -1136,6 +1151,15 @@ async function renderJobDetail(id) {
       // Audio downloads depend on the source file still being on disk.
       document.getElementById('jobDlAudio').disabled = !j.hasAudio;
       document.getElementById('jobDlMp3').disabled = !j.hasAudio;
+      // Telegram destination field: only meaningful with accounts (per-user + remembered).
+      const tgRow = document.getElementById('tgRow');
+      if (ME && ME.authEnabled && ME.user) {
+        document.getElementById('tgChatId').value = ME.user.telegramChatId || '';
+        document.getElementById('tgSaveStatus').textContent = '';
+        tgRow.classList.remove('hidden');
+      } else {
+        tgRow.classList.add('hidden');
+      }
       readyCard.classList.remove('hidden');
     }
   } catch (e) {
@@ -1181,19 +1205,35 @@ document.getElementById('jobSaveBtn').onclick = async () => {
 
 document.getElementById('jobSendBtn').onclick = async () => {
   const status = document.getElementById('jobActionStatus');
-  status.textContent = 'Sending to Telegram…';
+  const btn = document.getElementById('jobSendBtn');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span>Building bundle and sending to Telegram…';
   try {
-    const res = await fetch('/api/send-telegram', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ markdown: document.getElementById('jobMarkdown').value }),
-    });
-    const data = await res.json();
+    const res = await fetch(`/api/jobs/${currentJobId}/telegram`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Send failed');
-    status.textContent = 'Sent ✓';
+    status.textContent = 'Sent to Telegram ✓';
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
   }
+};
+
+// Save (remember) the Telegram destination chat id.
+document.getElementById('tgSaveBtn').onclick = async () => {
+  const chatId = document.getElementById('tgChatId').value.trim();
+  const s = document.getElementById('tgSaveStatus');
+  s.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/me/telegram', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    if (ME && ME.user) ME.user.telegramChatId = data.telegramChatId;
+    s.textContent = data.telegramChatId ? 'Saved ✓ This is now your default destination.' : 'Cleared — will use the server default.';
+  } catch (e) { s.textContent = 'Error: ' + e.message; }
 };
 
 async function downloadJobFile(kind) {

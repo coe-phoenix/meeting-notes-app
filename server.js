@@ -916,6 +916,64 @@ app.get('/api/jobs/:id/download/all.zip', (req, res) => {
   archive.finalize();
 });
 
+// Build the meeting bundle (summary + both transcripts + mp3) to a temp .zip file
+// and return its path. The bit-exact original audio is left OUT — it can be huge
+// and Telegram bots cap documents at 50MB; the mp3 keeps the bundle sendable.
+async function buildBundleZip(j) {
+  const date = jobDate(j);
+  const tmpZip = path.join(UPLOAD_DIR, `bundle-${crypto.randomUUID()}.zip`);
+  const output = fs.createWriteStream(tmpZip);
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  const temps = [];
+  const done = new Promise((resolve, reject) => {
+    output.on('close', resolve);
+    archive.on('error', reject);
+  });
+  archive.pipe(output);
+  if (j.markdown) archive.append(decJobText(j, j.markdown), { name: `${date}-meeting-summary.md` });
+  if (j.raw_transcript) archive.append(decJobText(j, j.raw_transcript), { name: `${date}-transcript-raw.txt` });
+  if (j.cleaned_transcript) archive.append(decJobText(j, j.cleaned_transcript), { name: `${date}-transcript-cleaned.txt` });
+  if (j.audio_path && fs.existsSync(j.audio_path)) {
+    try { const m = await plaintextMp3(j); temps.push(m); archive.file(m.path, { name: `${date}-meeting-audio.mp3` }); }
+    catch (e) { console.error('bundle mp3 failed, sending without audio:', e.message); }
+  }
+  archive.finalize();
+  await done;
+  temps.forEach((t) => t.cleanup());
+  return tmpZip;
+}
+
+// Send a job's bundle to Telegram, to the user's remembered chat id (or the env
+// default). The bot token is server-global; only the destination is per-user.
+app.post('/api/jobs/:id/telegram', async (req, res) => {
+  const j = ownedJob(req, res, req.params.id);
+  if (!j) return;
+  if (!TELEGRAM_BOT_TOKEN) return res.status(500).json({ error: 'Telegram is not configured on the server (TELEGRAM_BOT_TOKEN missing).' });
+  const chatId = (auth.enabled && req.user && req.user.telegram_chat_id) || TELEGRAM_CHAT_ID;
+  if (!chatId) return res.status(400).json({ error: 'No Telegram chat ID set — add one in the field above first.' });
+
+  let zipPath = null;
+  try {
+    zipPath = await buildBundleZip(j);
+    const buf = fs.readFileSync(zipPath);
+    if (buf.length > 50 * 1024 * 1024) {
+      throw new Error('Bundle is over Telegram’s 50MB limit — download it instead, or the meeting is too long to send this way.');
+    }
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('caption', `Meeting bundle — ${jobDate(j)}`);
+    form.append('document', new Blob([buf], { type: 'application/zip' }), `${jobDate(j)}-meeting-bundle.zip`);
+    const tg = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
+    if (!tg.ok) throw new Error(`Telegram send failed (${tg.status}): ${await tg.text()}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (zipPath) { try { fs.unlinkSync(zipPath); } catch { /* ignore */ } }
+  }
+});
+
 // ---------- Account, quota, PDPA (Phase 5) ----------
 // Identity + quota + consent for the current session. Works in both modes: with
 // auth off it reports authEnabled:false so the UI skips login/consent entirely.
@@ -931,6 +989,7 @@ app.get('/api/me', (req, res) => {
           email: req.user.email, isAdmin: !!req.user.is_admin,
           consentAt: req.user.consent_at, createdAt: req.user.created_at,
           marketingConsentAt: req.user.marketing_consent_at,
+          telegramChatId: req.user.telegram_chat_id || '',
         }
       : null,
   });
@@ -952,6 +1011,14 @@ app.post('/api/me/marketing', (req, res) => {
   if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account' });
   const updated = jobs.setUserMarketing(req.user.id, !!(req.body && req.body.optIn));
   res.json({ ok: true, marketingConsentAt: updated.marketing_consent_at });
+});
+
+// Save (or clear) the user's remembered Telegram destination chat id.
+app.post('/api/me/telegram', (req, res) => {
+  if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account' });
+  const chatId = String((req.body && req.body.chatId) || '').trim();
+  const updated = jobs.setUserTelegram(req.user.id, chatId || null);
+  res.json({ ok: true, telegramChatId: updated.telegram_chat_id || '' });
 });
 
 // Account deletion (PDPA): remove all of the user's jobs + files + usage + row.
