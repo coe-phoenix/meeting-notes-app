@@ -33,55 +33,53 @@ FORMAT: Write phases 1–4 below as normal, readable Markdown prose — real hea
 
 Do NOT deploy anything, do NOT write secrets, and do NOT assume any infrastructure. Your only deliverable is the code + docs, which a human will review as a pull request.
 
-CRITICAL OUTPUT CONTRACT: ONLY after all four phases above, end your response with a single fenced code block tagged json containing the actual files to commit (this is the only place JSON appears), in exactly this shape:
+AI PROVIDER: If the POC needs an LLM or any AI capability, use Anthropic's Claude API (the \`@anthropic-ai/sdk\` npm package, or the REST API) with an \`ANTHROPIC_API_KEY\` environment variable — do NOT use OpenAI or any other provider. Include \`ANTHROPIC_API_KEY\` (and any other needed variables) in a generated \`.env.example\` file, and read config from environment variables.
 
-\`\`\`json
-{
-  "repo": "short-kebab-case-name",
-  "summary": "one-paragraph PR description",
-  "files": [
-    { "path": "README.md", "content": "..." },
-    { "path": "src/index.js", "content": "..." }
-  ]
-}
-\`\`\`
+CRITICAL OUTPUT CONTRACT: ONLY after all four phases above, output the files to commit. Do NOT use JSON. First output these two lines:
 
-Every file's full contents go in "content" (escaped for JSON). Keep it under ${MAX_FILES} files. Output nothing after the closing fence.`;
+REPO: short-kebab-case-name
+SUMMARY: one sentence describing the PR
+
+Then output each file as a block delimited EXACTLY like this, with the delimiter lines on their own lines and the file's real, verbatim contents in between (any characters allowed — do not escape anything):
+
+<<<<FILE: relative/path/to/file>>>>
+...the complete file contents, exactly as they should appear on disk...
+<<<<END>>>>
+
+Keep the project minimal — a handful of files, under ${MAX_FILES}. Output nothing after the last <<<<END>>>>.`;
 
 function slugify(s, fallback = 'poc') {
   const out = String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   return out || fallback;
 }
 
-// Extract the LAST ```json fenced block from the model output and validate it.
-// Returns { repo, summary, files } or null if there's no usable manifest.
+// Parse the delimiter-based file manifest (see DEFAULT_INSTRUCTIONS). File
+// contents are RAW text between <<<<FILE: path>>>> and <<<<END>>>> markers, so
+// generated code (backticks, ${}, quotes, newlines) needs no escaping — far more
+// robust than packing everything into JSON. Returns { repo, summary, files } or
+// null if no usable file block is present. Truncated output degrades gracefully:
+// complete blocks are kept, an unterminated trailing block is dropped.
 function parseManifest(text) {
   if (typeof text !== 'string') return null;
-  // Find the last ```json ... ``` block (there may be illustrative ones earlier).
-  const re = /```json\s*([\s\S]*?)```/gi;
-  let m, last = null;
-  while ((m = re.exec(text)) !== null) last = m[1];
-  if (!last) return null;
-
-  let parsed;
-  try { parsed = JSON.parse(last.trim()); } catch { return null; }
-  if (!parsed || !Array.isArray(parsed.files) || !parsed.files.length) return null;
-
+  const fileRe = /<<<<FILE:\s*([^\n>]+?)\s*>>>>\r?\n([\s\S]*?)\r?\n<<<<END>>>>/g;
   const files = [];
-  for (const f of parsed.files) {
-    if (!f || typeof f.path !== 'string' || typeof f.content !== 'string') continue;
-    const path = f.path.replace(/^\.\//, '').trim();
+  let m;
+  while ((m = fileRe.exec(text)) !== null) {
+    const path = m[1].replace(/^\.\//, '').trim();
+    const content = m[2];
     // Reject absolute paths + traversal — everything must land inside the repo.
     if (!path || path.startsWith('/') || path.split('/').includes('..')) continue;
-    if (Buffer.byteLength(f.content, 'utf8') > MAX_FILE_BYTES) continue;
-    files.push({ path, content: f.content });
+    if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) continue;
+    files.push({ path, content });
     if (files.length >= MAX_FILES) break;
   }
   if (!files.length) return null;
 
+  const repoM = text.match(/^REPO:\s*(.+)$/m);
+  const sumM = text.match(/^SUMMARY:\s*(.+)$/m);
   return {
-    repo: slugify(parsed.repo, 'meeting-poc'),
-    summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+    repo: slugify(repoM ? repoM[1] : '', 'meeting-poc'),
+    summary: sumM ? sumM[1].trim() : '',
     files,
   };
 }

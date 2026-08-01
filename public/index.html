@@ -300,6 +300,7 @@
     <div class="btn-row">
       <button class="btn-secondary" id="pipeSaveBtn">Save pipeline settings</button>
     </div>
+    <a class="link" id="pipeReset" style="font-size:0.8rem; display:inline-block; margin-top:6px;">Reset instructions to default</a>
     <div class="status" id="pipeSaveStatus"></div>
   </div>
 </div>
@@ -1581,6 +1582,7 @@ async function loadPipelineConfig() {
     if (c.models.includes(c.model)) sel.value = c.model;
     else document.getElementById('pipeModelCustom').value = c.model;
     document.getElementById('pipeInstructions').value = c.instructions;
+    window.__pipeDefault = c.defaultInstructions || '';
     document.getElementById('pipelineGh').textContent = c.githubReady
       ? `· GitHub connected${c.owner ? ' (' + c.owner + ')' : ''}`
       : '· GITHUB_TOKEN not set — runs will generate code but skip the repo/PR';
@@ -1598,6 +1600,12 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
     s.textContent = 'Saved ✓';
   } catch (e) { s.textContent = 'Error: ' + e.message; }
+};
+document.getElementById('pipeReset').onclick = () => {
+  if (window.__pipeDefault) {
+    document.getElementById('pipeInstructions').value = window.__pipeDefault;
+    document.getElementById('pipeSaveStatus').textContent = 'Reset to default — click Save to apply.';
+  }
 };
 
 // Tiny Markdown renderer for the pipeline's human-readable phases (headings,
@@ -1651,19 +1659,20 @@ document.getElementById('pipeRunBtn').onclick = () => {
   rawToggle.classList.remove('hidden'); rawToggle.textContent = 'Show raw output';
   status.innerHTML = '<span class="spinner"></span>Starting…';
 
-  // Prose (the phases) is everything before the ```json manifest fence; the
-  // manifest itself is never shown raw — we surface the file names instead.
+  // Prose (the phases) is everything before the first <<<<FILE:>>> block; the
+  // file blocks are never shown raw — we surface the file names instead. The
+  // REPO:/SUMMARY: control lines are hidden from the readable view.
   const render = () => {
     raw.textContent = buffer;
-    const fence = buffer.indexOf('```json');
-    const prose = (fence >= 0 ? buffer.slice(0, fence) : buffer).replace(/\\n/g, '\n').trim();
+    const marker = buffer.indexOf('<<<<FILE:');
+    let prose = (marker >= 0 ? buffer.slice(0, marker) : buffer);
+    prose = prose.replace(/^REPO:.*$/m, '').replace(/^SUMMARY:.*$/m, '').replace(/\\n/g, '\n').trim();
     phasesEl.innerHTML = mdLite(prose);
     phasesEl.scrollTop = phasesEl.scrollHeight;
-    if (fence >= 0) {
-      const names = [...buffer.slice(fence).matchAll(/"path"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+    const names = [...buffer.matchAll(/<<<<FILE:\s*([^\n>]+?)\s*>>>>/g)].map((m) => m[1]);
+    if (names.length) {
       filesEl.classList.remove('hidden');
-      filesEl.innerHTML = '<span class="spinner"></span>Writing files…'
-        + (names.length ? ' ' + names.map((n) => `<code>${escapeHtml(n)}</code>`).join(' ') : '');
+      filesEl.innerHTML = '<span class="spinner"></span>Writing files… ' + names.map((n) => `<code>${escapeHtml(n)}</code>`).join(' ');
     }
   };
 

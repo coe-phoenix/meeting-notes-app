@@ -14,36 +14,49 @@ const ok = (name, cond, extra = '') => {
   if (!cond) failures++;
 };
 
-// ---------- parseManifest ----------
+// ---------- parseManifest (delimiter format) ----------
 {
-  const good = 'Here is the plan...\n```json\n{"repo":"My POC!","summary":"does x","files":[{"path":"README.md","content":"# hi"},{"path":"src/i.js","content":"console.log(1)"}]}\n```';
+  const good = `[1. Product Specs] a POC
+REPO: My POC!
+SUMMARY: does x
+
+<<<<FILE: README.md>>>>
+# hi
+some text
+<<<<END>>>>
+
+<<<<FILE: src/i.js>>>>
+const x = \`template \${1}\`;
+console.log(x);
+<<<<END>>>>`;
   const r = pipeline.parseManifest(good);
   ok('parses a valid manifest', r && r.files.length === 2);
   ok('slugifies the repo name', r.repo === 'my-poc');
   ok('keeps summary', r.summary === 'does x');
+  ok('keeps raw code verbatim (backticks/${} unescaped)', r.files[1].content.includes('`template ${1}`'));
 
-  // Uses the LAST json block (earlier illustrative ones ignored).
-  const twoBlocks = '```json\n{"files":[{"path":"a","content":"x"}]}\n```\nthen the real one:\n```json\n{"repo":"real","files":[{"path":"b.js","content":"y"}]}\n```';
-  ok('uses the last json block', pipeline.parseManifest(twoBlocks).files[0].path === 'b.js');
+  ok('returns null when no file blocks', pipeline.parseManifest('just prose, no files') === null);
 
-  ok('returns null when no json block', pipeline.parseManifest('just prose, no manifest') === null);
-  ok('returns null on invalid json', pipeline.parseManifest('```json\n{not json}\n```') === null);
-  ok('returns null when files empty', pipeline.parseManifest('```json\n{"files":[]}\n```') === null);
+  // Truncated trailing block (no <<<<END>>>>) is dropped; earlier complete ones kept.
+  const truncated = `<<<<FILE: a.js>>>>\nok\n<<<<END>>>>\n<<<<FILE: b.js>>>>\nunterminated...`;
+  const tr = pipeline.parseManifest(truncated);
+  ok('drops an unterminated trailing block, keeps complete ones', tr.files.length === 1 && tr.files[0].path === 'a.js');
 
   // Path traversal + absolute paths are dropped.
-  const evil = '```json\n{"files":[{"path":"../escape","content":"x"},{"path":"/etc/passwd","content":"y"},{"path":"ok.txt","content":"z"}]}\n```';
+  const evil = `<<<<FILE: ../escape>>>>\nx\n<<<<END>>>>\n<<<<FILE: /etc/passwd>>>>\ny\n<<<<END>>>>\n<<<<FILE: ok.txt>>>>\nz\n<<<<END>>>>`;
   const er = pipeline.parseManifest(evil);
   ok('drops traversal/absolute paths, keeps safe ones', er.files.length === 1 && er.files[0].path === 'ok.txt');
 
   // Oversized file is skipped.
   const big = 'x'.repeat(pipeline.MAX_FILE_BYTES + 1);
-  const or = pipeline.parseManifest(`\`\`\`json\n{"files":[{"path":"big","content":"${big}"},{"path":"small","content":"ok"}]}\n\`\`\``);
+  const or = pipeline.parseManifest(`<<<<FILE: big>>>>\n${big}\n<<<<END>>>>\n<<<<FILE: small>>>>\nok\n<<<<END>>>>`);
   ok('skips oversized files', or.files.length === 1 && or.files[0].path === 'small');
 }
 
 // ---------- models / defaults ----------
 ok('exposes a model list incl. the default', pipeline.MODELS.includes(pipeline.DEFAULT_MODEL));
 ok('default instructions forbid deploy/secrets', /do NOT deploy/i.test(pipeline.DEFAULT_INSTRUCTIONS) && /do NOT write secrets/i.test(pipeline.DEFAULT_INSTRUCTIONS));
+ok('default instructions require Claude (not OpenAI) for AI', /ANTHROPIC_API_KEY/.test(pipeline.DEFAULT_INSTRUCTIONS) && /do NOT use OpenAI/i.test(pipeline.DEFAULT_INSTRUCTIONS));
 
 // ---------- db settings ----------
 {

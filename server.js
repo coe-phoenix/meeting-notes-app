@@ -1103,6 +1103,7 @@ app.get('/api/admin/pipeline/config', (req, res) => {
   if (!requireAdmin(req, res)) return;
   res.json({
     instructions: jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS,
+    defaultInstructions: pipeline.DEFAULT_INSTRUCTIONS,
     model: jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL,
     models: pipeline.MODELS,
     githubReady: !!GITHUB_TOKEN,
@@ -1150,7 +1151,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
   try {
     stream = anthropic.messages.stream({
       model,
-      max_tokens: 16000,
+      max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
       system: instructions,
       messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
     });
