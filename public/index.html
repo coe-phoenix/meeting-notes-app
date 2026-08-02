@@ -318,9 +318,9 @@
         <ol style="margin:4px 0 0 18px; padding:0;">
           <li><code>create_server</code> (Lightsail 8 / region 15 / plan 57 / project 17)</li>
           <li>poll <code>get_server</code> until a public IP is assigned</li>
-          <li>poll <code>run_command</code> until the on-VM agent answers</li>
-          <li><code>git clone</code> the public repo → <code>npm install</code> → <code>pm2 start npm -- start</code> (port 80, <code>ANTHROPIC_API_KEY</code> inline)</li>
-          <li>QA: <code>pm2 status</code> + <code>curl -I http://localhost</code> → live-URL banner</li>
+          <li><code>add_firewall_rule</code> to open tcp/3000 (nginx already owns :80)</li>
+          <li><code>git clone</code> the public repo → <code>npm install</code> → <code>pm2 start npm -- start</code> (port 3000, <code>ANTHROPIC_API_KEY</code> inline; first command retries until the agent answers)</li>
+          <li>QA: <code>pm2 status</code> + <code>curl -I http://localhost:3000</code> → live-URL banner</li>
         </ol>
       </div>
 

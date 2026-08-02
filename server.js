@@ -1278,7 +1278,11 @@ async function mcpAccessToken() {
 // Pinned deploy target (user's Dojo account): Amazon Lightsail, Singapore, 1 GB.
 const DEPLOY_CFG = {
   cloud_provider_id: 8, region_id: 15, cloud_service_plan_id: 57, support_level_id: 1,
-  project_id: 17, admin_email: 'eddiesoo612@gmail.com', app_port: 80,
+  project_id: 17, admin_email: 'eddiesoo612@gmail.com',
+  // The Lightsail image runs nginx+docker on :80 and run_command can't stop it
+  // (systemctl stop / docker stop aren't allowlisted), so run the app on a free
+  // port and open the firewall for it.
+  app_port: 3000,
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Pull a value for `key` out of an MCP tool result no matter how it's nested.
@@ -1343,35 +1347,44 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
   log(`✔ Public IP: ${publicIp}\n`);
   if (!vmId) throw new Error('Server is up but no vm_id was returned — cannot run_command.');
 
-  // 3. Poll run_command until the on-VM agent answers (it lags the IP by minutes).
-  send('status', { message: 'Waiting for the server agent to come online…' });
-  const t1 = Date.now();
-  const AGENT_MS = 8 * 60 * 1000;
-  while (!isAborted()) {
-    if (Date.now() - t1 > AGENT_MS) throw new Error('The on-VM agent did not come online (8 min).');
-    try {
-      const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command: 'true' });
-      const ec = deepFind(r, 'exit_code');
-      if (ec === 0 || ec === '0') { send('status', { message: 'Agent online. Deploying…' }); break; }
-    } catch { /* agent still initialising */ }
-    send('status', { message: `Waiting for the server agent… ${Math.round((Date.now() - t1) / 1000)}s` });
-    await sleep(15000);
-  }
-  if (isAborted()) return {};
+  // Open the firewall for the app port (nginx already owns :80). Best-effort —
+  // a duplicate rule is harmless.
+  send('status', { message: `Opening firewall tcp/${c.app_port}…` });
+  try {
+    await call('add_firewall_rule', { vm_id: vmId, project_id: c.project_id, port: String(c.app_port), protocol: 'tcp', sources: ['0.0.0.0/0'] });
+    log(`✔ firewall: opened tcp/${c.app_port}\n`);
+  } catch (e) { log(`(firewall rule not added — may already exist: ${e.message})\n`); }
 
-  // 4. Deploy — one run_command per step (fresh shell each; no cd/&&/redirection).
-  const run = async (command) => {
-    send('status', { message: `run_command: ${command.length > 60 ? command.slice(0, 57) + '…' : command}` });
-    log(`$ ${command}\n`);
-    const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command });
-    const stdout = deepFind(r, 'stdout') || '';
-    const stderr = deepFind(r, 'stderr') || '';
-    const ec = deepFind(r, 'exit_code');
-    const body = [stdout, stderr].filter(Boolean).join('\n').trim();
-    log(`${body ? body + '\n' : ''}[exit ${ec}]\n\n`);
-    return { ec, stdout, stderr };
+  // 3. Deploy — one run_command per step (fresh shell each; no cd/&&/redirection).
+  // NOTE: run_command only permits allowlisted commands (ls/cat/df/systemctl
+  // status/docker ps + git/npm/pm2/curl) — do NOT probe with `true`. The on-VM
+  // agent can lag the public IP, so the FIRST command retries until it answers
+  // (a thrown error or a result with no exit_code = agent not ready yet).
+  const run = async (command, { retryMs = 0 } = {}) => {
+    const deadline = Date.now() + retryMs;
+    for (;;) {
+      if (isAborted()) return { ec: undefined, stdout: '', stderr: '' };
+      const waiting = retryMs && Date.now() < deadline;
+      try {
+        send('status', { message: `run_command: ${command.length > 60 ? command.slice(0, 57) + '…' : command}` });
+        const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command });
+        const ec = deepFind(r, 'exit_code');
+        if (ec === undefined && waiting) { // agent likely not ready — retry
+          send('status', { message: 'Waiting for the server agent to accept commands…' });
+          await sleep(12000); continue;
+        }
+        const stdout = deepFind(r, 'stdout') || '';
+        const stderr = deepFind(r, 'stderr') || '';
+        log(`$ ${command}\n${[stdout, stderr].filter(Boolean).join('\n').trim()}\n[exit ${ec}]\n\n`);
+        return { ec, stdout, stderr };
+      } catch (e) {
+        if (waiting) { send('status', { message: 'Waiting for the server agent to accept commands…' }); await sleep(12000); continue; }
+        throw e;
+      }
+    }
   };
-  await run(`git clone ${cloneUrl} /opt/app`);
+  send('status', { message: 'Agent reachable — deploying…' });
+  await run(`git clone ${cloneUrl} /opt/app`, { retryMs: 5 * 60 * 1000 });
   await run('npm install --prefix /opt/app --omit=dev');
   await run('npm install -g pm2');
   await run(`ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=${c.app_port} pm2 start npm --name app --cwd /opt/app -- start`);
@@ -1381,9 +1394,10 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
   await run('pm2 status');
   const health = await run(`curl -I -s http://localhost:${c.app_port}`);
   const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(`${health.stdout} ${health.stderr}`);
+  const liveUrl = `http://${publicIp}:${c.app_port}`;
   send('status', { message: ok ? '✅ Health check returned 200.' : '⚠️ Health check did not return 200 — see the log.' });
-  log(`\n========================================\n${ok ? '✅ DEPLOYED' : '⚠️ DEPLOY FINISHED (health ≠ 200)'}\nLIVE URL:  http://${publicIp}\nPUBLIC IP: ${publicIp}\n========================================\n`);
-  return { publicIp, ok };
+  log(`\n========================================\n${ok ? '✅ DEPLOYED' : '⚠️ DEPLOY FINISHED (health ≠ 200)'}\nLIVE URL:  ${liveUrl}\nPUBLIC IP: ${publicIp}\n========================================\n`);
+  return { publicIp, ok, liveUrl };
 }
 
 // Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
@@ -1468,7 +1482,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
     // ---- Stage 3: deterministic deploy + QA (provision/poll done in Node). ----
     const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
-    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true, liveUrl: dep && dep.publicIp ? `http://${dep.publicIp}` : null });
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true, liveUrl: (dep && dep.liveUrl) || null });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });
@@ -1513,7 +1527,7 @@ app.get('/api/admin/pipeline/deploy-stream', async (req, res) => {
     if (GITHUB_TOKEN) await github.setRepoPublic(GITHUB_TOKEN, repoUrl);
 
     const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
-    send('done', { repoUrl, deployed: true, liveUrl: dep && dep.publicIp ? `http://${dep.publicIp}` : null });
+    send('done', { repoUrl, deployed: true, liveUrl: (dep && dep.liveUrl) || null });
   } catch (err) {
     console.error('deploy stream failed:', err.message);
     send('error', { error: err.message });
