@@ -50,12 +50,20 @@ async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody,
   const fullName = repo.full_name; // owner/name
   const base = repo.default_branch || 'main';
 
-  // 2. Base commit + its tree (from auto_init's README commit).
-  const ref = await gh(token, 'GET', `/repos/${fullName}/git/ref/heads/${base}`);
+  // Land the generated files directly on the default branch (main), so a plain
+  // `git clone` gets the code — no `poc` branch, no PR to check out.
+  await commitFiles({ token, fullName, files, message: 'Add generated POC from meeting minutes', branch: base });
+
+  return { repoUrl: repo.html_url, prUrl: null, cloneUrl: repo.clone_url, branch: base, fullName };
+}
+
+// Commit a full set of files onto `branch` (force-updates the ref). Used both for
+// the initial commit and by the self-heal loop to push a corrected file set.
+// files: [{ path, content }]. Returns the new commit sha.
+async function commitFiles({ token, fullName, files, message, branch = 'main' }) {
+  const ref = await gh(token, 'GET', `/repos/${fullName}/git/ref/heads/${branch}`);
   const baseSha = ref.object.sha;
   const baseCommit = await gh(token, 'GET', `/repos/${fullName}/git/commits/${baseSha}`);
-
-  // 3. Blobs → tree → commit.
   const tree = [];
   for (const f of files) {
     const blob = await gh(token, 'POST', `/repos/${fullName}/git/blobs`, {
@@ -63,18 +71,10 @@ async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody,
     });
     tree.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
   }
-  const newTree = await gh(token, 'POST', `/repos/${fullName}/git/trees`, {
-    base_tree: baseCommit.tree.sha, tree,
-  });
-  const commit = await gh(token, 'POST', `/repos/${fullName}/git/commits`, {
-    message: 'Add generated POC from meeting minutes', tree: newTree.sha, parents: [baseSha],
-  });
-
-  // 4. Land the generated files directly on the default branch (main), so a
-  // plain `git clone` gets the code — no `poc` branch, no PR to check out.
-  await gh(token, 'PATCH', `/repos/${fullName}/git/refs/heads/${base}`, { sha: commit.sha, force: true });
-
-  return { repoUrl: repo.html_url, prUrl: null, cloneUrl: repo.clone_url, branch: base };
+  const newTree = await gh(token, 'POST', `/repos/${fullName}/git/trees`, { base_tree: baseCommit.tree.sha, tree });
+  const commit = await gh(token, 'POST', `/repos/${fullName}/git/commits`, { message, tree: newTree.sha, parents: [baseSha] });
+  await gh(token, 'PATCH', `/repos/${fullName}/git/refs/heads/${branch}`, { sha: commit.sha, force: true });
+  return commit.sha;
 }
 
 // Best-effort: make an existing repo public so a server can clone it without
@@ -89,4 +89,4 @@ async function setRepoPublic(token, repoUrl) {
   } catch { return false; }
 }
 
-module.exports = { createRepoWithPR, setRepoPublic };
+module.exports = { createRepoWithPR, commitFiles, setRepoPublic };

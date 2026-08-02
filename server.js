@@ -1323,6 +1323,43 @@ curl -I -s -m 10 http://localhost:${port} || echo 'curl failed'
 echo '=== DEPLOY DONE ==='
 `;
 }
+
+// Re-deploy after the self-heal loop pushed a fix to the repo: pull the new code,
+// reinstall, restart under pm2, re-check. The box already has Node/nginx handled.
+function redeployScript({ anthropicKey, port }) {
+  return `set -e
+echo '[redeploy] Pulling the fix'
+git -C /opt/app fetch --depth 1 origin main
+git -C /opt/app reset --hard origin/main
+echo '[redeploy] Installing dependencies'
+npm install --prefix /opt/app --omit=dev --no-audit --no-fund
+echo '[redeploy] Restarting under pm2'
+pm2 delete app 2>/dev/null || true
+ANTHROPIC_API_KEY='${anthropicKey}' PORT=${port} pm2 start npm --name app --cwd /opt/app -- start
+pm2 save 2>/dev/null || true
+sleep 5
+pm2 status
+echo '--- health check ---'
+curl -I -s -m 10 http://localhost:${port} || echo 'curl failed'
+echo '=== DEPLOY DONE ==='
+`;
+}
+
+// Collect failure diagnostics to feed the self-heal fix pass: pm2 state + app
+// logs (the crash/stack trace) + the HTTP response + package.json + file list.
+function diagnosticsScript({ port }) {
+  return `echo '=== pm2 status ==='
+pm2 status 2>&1 || true
+echo '=== pm2 logs (last 80 lines) ==='
+pm2 logs app --lines 80 --nostream 2>&1 || true
+echo '=== curl http://localhost:${port} ==='
+curl -i -s -m 8 http://localhost:${port} 2>&1 | head -40 || echo 'no response on ${port}'
+echo '=== package.json ==='
+cat /opt/app/package.json 2>&1 || echo 'no package.json'
+echo '=== ls /opt/app ==='
+ls -la /opt/app 2>&1 || true
+`;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Pull a value for `key` out of an MCP tool result no matter how it's nested.
 function deepFind(obj, key) {
@@ -1352,7 +1389,7 @@ function mcpResultObj(result) {
 // for a public IP → add_ssh_key. The actual install/deploy runs over SSH (full
 // root shell), because run_command's allowlist can't install a Node runtime.
 // Progress streams over SSE (`send`); `isAborted` polls.
-async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
+async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted, onHeal }) {
   const c = DEPLOY_CFG;
   const call = (name, args) => mcpclient.callTool(mcpUrl, mcpToken, name, args).then(mcpResultObj);
   const log = (t) => send('delta', { text: t });
@@ -1418,13 +1455,31 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
     const up = await sshdeploy.waitForSsh({ host: publicIp, keyPath: key.keyPath, onStatus: (m) => send('status', { message: m }), isAborted });
     if (!up) return {}; // aborted
 
-    send('status', { message: 'Connected over SSH — installing Node, cloning, starting the app…' });
-    const script = deployScript({ cloneUrl, anthropicKey: ANTHROPIC_API_KEY, port: c.app_port });
-    const { code, output } = await sshdeploy.runScript({ host: publicIp, keyPath: key.keyPath, script, onData: (t) => log(t) });
+    // Deploy, then self-heal: if the health check isn't 200 and a healer is
+    // provided, collect the server logs, ask it to fix + push, and redeploy —
+    // up to a few attempts. Without a healer it's a single shot (deploy-only).
+    const runScript = (script) => sshdeploy.runScript({ host: publicIp, keyPath: key.keyPath, script, onData: (t) => log(t) });
+    const maxAttempts = onHeal ? 3 : 1;
+    let ok = false;
+    for (let attempt = 1; attempt <= maxAttempts && !isAborted(); attempt++) {
+      send('status', { message: attempt === 1
+        ? 'Connected over SSH — installing Node, cloning, starting the app…'
+        : `Redeploying the fix (attempt ${attempt}/${maxAttempts})…` });
+      const script = attempt === 1
+        ? deployScript({ cloneUrl, anthropicKey: ANTHROPIC_API_KEY, port: c.app_port })
+        : redeployScript({ anthropicKey: ANTHROPIC_API_KEY, port: c.app_port });
+      const { output } = await runScript(script);
+      ok = /HTTP\/\d(?:\.\d)?\s+200/.test(output);
+      if (ok || attempt === maxAttempts || !onHeal || isAborted()) break;
 
-    const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(output);
+      send('status', { message: `Health check failed — collecting logs and asking Claude to fix (attempt ${attempt}/${maxAttempts - 1})…` });
+      const diag = await runScript(diagnosticsScript({ port: c.app_port }));
+      const healed = await onHeal(diag.output, attempt); // fixes + pushes; false to stop
+      if (!healed) break;
+    }
+
     const liveUrl = ok ? `http://${publicIp}${c.app_port === 80 ? '' : ':' + c.app_port}` : null;
-    send('status', { message: ok ? '✅ App is live (HTTP 200).' : `❌ Deploy failed (ssh exit ${code}, no HTTP 200).` });
+    send('status', { message: ok ? '✅ App is live (HTTP 200).' : '❌ Deploy failed — app never returned 200.' });
     log(`\n========================================\n${ok ? `✅ DEPLOYED\nLIVE URL:  ${liveUrl}` : '❌ DEPLOY FAILED (no HTTP 200 — see the log above)'}\nPUBLIC IP: ${publicIp}\n========================================\n`);
     return { publicIp, ok, liveUrl };
   } finally {
@@ -1496,7 +1551,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
     const willDeploy = !!mcpToken && !!mcpUrl; // deploy whenever the MCP is connected
     send('status', { message: `Creating a public repo with ${manifest.files.length} file(s)…` });
     const name = `${manifest.repo}-${Date.now().toString(36)}`;
-    const { repoUrl, prUrl, cloneUrl } = await github.createRepoWithPR({
+    const { repoUrl, prUrl, cloneUrl, fullName } = await github.createRepoWithPR({
       token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
       prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary, isPublic: true,
     });
@@ -1512,8 +1567,34 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    // ---- Stage 3: deterministic deploy + QA (provision/poll done in Node). ----
-    const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
+    // ---- Stage 3: deploy + QA, with a self-heal loop. If the app doesn't answer
+    // 200, feed the server logs + current files back to Claude, push the fix to
+    // the repo, and redeploy — mirroring an engineer's deploy→observe→fix loop. ----
+    let currentFiles = manifest.files;
+    const onHeal = async (logs, attempt) => {
+      send('status', { message: 'Claude is analysing the failure and rewriting the code…' });
+      let fixText = ''; // keep the fix response separate from the original code-gen (full)
+      // Use Sonnet for the fix pass: Opus 5 false-positive-refuses this "debug my
+      // crashed server" prompt, while Sonnet handles it reliably.
+      stream = anthropic.messages.stream({
+        model: 'claude-sonnet-5',
+        max_tokens: 32000,
+        system: pipeline.FIX_INSTRUCTIONS,
+        messages: [{ role: 'user', content: `Server logs from the failed deploy:\n\n${logs}\n\nCurrent project files:\n\n${pipeline.renderFiles(currentFiles)}` }],
+      });
+      stream.on('text', (delta) => { fixText += delta; send('delta', { text: delta }); });
+      await stream.finalMessage();
+      const fixed = pipeline.parseManifest(fixText);
+      const fixedFiles = fixed && fixed.files && fixed.files.length ? fixed.files : null;
+      if (!fixedFiles) { send('status', { message: 'Claude did not return a usable fix — stopping.' }); return false; }
+      currentFiles = fixedFiles;
+      try {
+        await github.commitFiles({ token: GITHUB_TOKEN, fullName, files: currentFiles, message: `Self-heal fix (attempt ${attempt})` });
+      } catch (e) { send('status', { message: `Could not push the fix: ${e.message}` }); return false; }
+      send('status', { message: `Pushed a fix (${currentFiles.length} file(s)).` });
+      return true;
+    };
+    const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted, onHeal });
     send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: !!(dep && dep.ok), liveUrl: (dep && dep.liveUrl) || null, deployNote: dep && !dep.ok ? 'Deploy did not succeed — see the log above.' : null });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);

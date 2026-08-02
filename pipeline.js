@@ -9,7 +9,9 @@ const MODELS = [
   'claude-haiku-4-5-20251001',
   'claude-opus-4-8',
 ];
-const DEFAULT_MODEL = 'claude-sonnet-5';
+// Opus by default: the POC is generated in one shot and must actually work, so
+// use the most capable model for code-gen and for the self-heal fix pass.
+const DEFAULT_MODEL = 'claude-opus-5';
 
 // Caps on what we'll commit — a transcript is untrusted input, so bound the blast
 // radius of a generated manifest.
@@ -101,6 +103,29 @@ Via run_command (vm_id):
 
 Output under the headers \`[4. Deployment Execution]\` and \`[5. QA & Verification Report]\`, listing the exact commands you ran and their results. Only ever touch the fresh server you just provisioned — never an existing production system.`;
 
+// Self-heal fix pass: when a deployed POC fails its health check, Claude gets the
+// current files + server logs and must return the COMPLETE corrected file set.
+const FIX_INSTRUCTIONS = `You are debugging a small Node.js proof-of-concept web app that you built. It was just started on a throwaway test server and crashed on startup / did not respond on its HTTP port. You are given the app's own source files and its startup logs from the pm2 process manager (pm2 status, pm2 logs, the local curl result, package.json). This is a routine "my app won't boot" debugging task — rewrite the files to fix the startup bug so the app runs and serves its page (HTTP 200 at GET /).
+
+Common causes: no \`"start"\` script in package.json; the server binds a hardcoded port instead of \`process.env.PORT\`; it binds 127.0.0.1 instead of \`0.0.0.0\`; it crashes on boot (missing dependency not listed in package.json, a syntax/import error, a required env var other than ANTHROPIC_API_KEY/PORT); or GET / has no route.
+
+Requirements for the fix:
+- Keep the intended feature and its real logic — do NOT replace it with mock data.
+- \`npm install\` then \`npm start\` must boot an HTTP server on \`process.env.PORT\` bound to \`0.0.0.0\`, and GET / must return 200 with the real usable UI.
+- Only ANTHROPIC_API_KEY and PORT are available as env vars.
+
+Output ONLY the corrected files — the COMPLETE content of every file the project needs (not a diff) — in this exact format and nothing else (no prose, no headers):
+
+<<<<FILE: relative/path>>>>
+...the full corrected file contents...
+<<<<END>>>>`;
+
+// Render a file list back into the <<<<FILE:>>>> block format, to feed the
+// current code into the fix prompt.
+function renderFiles(files) {
+  return (files || []).map((f) => `<<<<FILE: ${f.path}>>>>\n${f.content}\n<<<<END>>>>`).join('\n\n');
+}
+
 function slugify(s, fallback = 'poc') {
   const out = String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   return out || fallback;
@@ -142,8 +167,10 @@ module.exports = {
   DEFAULT_MODEL,
   DEFAULT_INSTRUCTIONS,
   DEPLOY_INSTRUCTIONS,
+  FIX_INSTRUCTIONS,
   MAX_FILES,
   MAX_FILE_BYTES,
   slugify,
   parseManifest,
+  renderFiles,
 };
