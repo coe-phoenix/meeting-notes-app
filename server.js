@@ -1275,41 +1275,115 @@ async function mcpAccessToken() {
   return jobs.getSetting('pipeline_mcp_token') || '';
 }
 
-// Stage 3: autonomous deploy + QA of an already-pushed public repo, via the
-// MCP's run_command tool. A fresh MCP-connected turn: Claude provisions a Dojo
-// server, clones the repo, starts it under pm2 (env passed inline), and QAs it.
-// Server-side tool use can pause the turn (10 tool-call cap) — resume by
-// re-streaming with the assistant reply appended, up to a hop ceiling. `send`
-// streams SSE, `setStream` exposes the live stream for abort, `isAborted` polls.
-async function runMcpDeploy({ model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary, send, setStream, isAborted }) {
-  const deployInstructions = jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS;
-  const envInline = `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=80`;
-  const mcpBase = {
-    model,
-    max_tokens: 32000,
-    betas: ['mcp-client-2025-11-20'],
-    system: deployInstructions,
-    mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
-    tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
-  };
-  let convo = [{ role: 'user', content:
-    'Deploy and verify this POC now, autonomously via the Dojo MCP tools. Do not ask me anything.\n\n' +
-    `Repo: ${repoUrl}\nClone URL (public, no auth): ${cloneUrl}\n${summary ? `Summary: ${summary}\n` : ''}\n` +
-    `Environment variables to run the app with (pass them INLINE to pm2 — there is no .env file):\n${envInline}\n\n` +
-    'Provision a fresh Ubuntu server (Amazon Lightsail, Singapore, 1 GB, project 17), stop nginx to free port 80, deploy on port 80 under pm2, then run the Phase 5 QA checks and print the live URL + public IP banner.' }];
-  for (let hop = 0; hop < 40 && !isAborted(); hop++) {
-    const stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
-    setStream(stream);
-    stream.on('text', (delta) => send('delta', { text: delta }));
-    stream.on('streamEvent', (ev) => {
-      if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
-        send('status', { message: `MCP tool: ${ev.content_block.name}…` });
+// Pinned deploy target (user's Dojo account): Amazon Lightsail, Singapore, 1 GB.
+const DEPLOY_CFG = {
+  cloud_provider_id: 8, region_id: 15, cloud_service_plan_id: 57, support_level_id: 1,
+  project_id: 17, admin_email: 'eddiesoo612@gmail.com', app_port: 80,
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Pull a value for `key` out of an MCP tool result no matter how it's nested.
+function deepFind(obj, key) {
+  const q = [obj];
+  while (q.length) {
+    const o = q.shift();
+    if (o && typeof o === 'object') {
+      for (const k of Object.keys(o)) {
+        if (k === key && o[k] != null && o[k] !== '') return o[k];
+        if (o[k] && typeof o[k] === 'object') q.push(o[k]);
       }
-    });
-    const msg = await stream.finalMessage();
-    if (msg.stop_reason !== 'pause_turn') break;
-    convo = [...convo, { role: 'assistant', content: msg.content }];
+    }
   }
+  return undefined;
+}
+// Normalise an MCP tool result into a plain object (structuredContent or parsed text).
+function mcpResultObj(result) {
+  if (!result || typeof result !== 'object') return {};
+  if (result.structuredContent && typeof result.structuredContent === 'object') return result.structuredContent;
+  const txt = (result.content || []).filter((c) => c && c.type === 'text').map((c) => c.text).join('\n');
+  try { return JSON.parse(txt); } catch { return { _text: txt }; }
+}
+
+// Stage 3: autonomous deploy + QA of an already-pushed public repo — DETERMINISTIC.
+// The provision + the 3–5 min "wait for the VM/agent" loop are done here in Node
+// (server-side sleeps), NOT by Claude, so the long wait costs ZERO model tokens.
+// Calls the Dojo MCP tools directly via mcpclient: create_server → poll
+// get_server for a public IP → poll run_command until the agent answers → run the
+// git/npm/pm2 deploy → QA. Progress streams over SSE (`send`); `isAborted` polls.
+async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
+  const c = DEPLOY_CFG;
+  const call = (name, args) => mcpclient.callTool(mcpUrl, mcpToken, name, args).then(mcpResultObj);
+  const log = (t) => send('delta', { text: t });
+
+  // 1. Provision.
+  send('status', { message: 'Provisioning Amazon Lightsail (1 GB, Singapore)…' });
+  const created = await call('create_server', {
+    cloud_provider_id: c.cloud_provider_id, region_id: c.region_id,
+    cloud_service_plan_id: c.cloud_service_plan_id, support_level_id: c.support_level_id,
+    project_id: c.project_id, name: `notetaker-poc-${Date.now().toString(36)}`, admin_email: c.admin_email,
+  });
+  const serverId = deepFind(created, 'server_id') ?? deepFind(created, 'id');
+  let vmId = deepFind(created, 'vm_id');
+  if (!serverId) throw new Error(`create_server did not return a server_id (got: ${JSON.stringify(created).slice(0, 300)})`);
+  log(`✔ create_server → server_id=${serverId}${vmId ? `, vm_id=${vmId}` : ''}. Waiting for a public IP…\n`);
+
+  // 2. Poll get_server for the public IP (Node loop — no model tokens).
+  let publicIp = null;
+  const t0 = Date.now();
+  const PROVISION_MS = 12 * 60 * 1000;
+  while (!isAborted()) {
+    if (Date.now() - t0 > PROVISION_MS) throw new Error('Timed out (12 min) waiting for a public IP.');
+    const s = await call('get_server', { project_id: c.project_id, server_id: serverId });
+    publicIp = deepFind(s, 'public_ip') || deepFind(s, 'publicIp') || deepFind(s, 'ip');
+    if (!vmId) vmId = deepFind(s, 'vm_id');
+    if (publicIp && String(publicIp).length > 6) { send('status', { message: `Server ready at ${publicIp}.` }); break; }
+    send('status', { message: `Provisioning… ${Math.round((Date.now() - t0) / 1000)}s elapsed (status ${deepFind(s, 'status')})` });
+    await sleep(15000);
+  }
+  if (isAborted()) return {};
+  log(`✔ Public IP: ${publicIp}\n`);
+  if (!vmId) throw new Error('Server is up but no vm_id was returned — cannot run_command.');
+
+  // 3. Poll run_command until the on-VM agent answers (it lags the IP by minutes).
+  send('status', { message: 'Waiting for the server agent to come online…' });
+  const t1 = Date.now();
+  const AGENT_MS = 8 * 60 * 1000;
+  while (!isAborted()) {
+    if (Date.now() - t1 > AGENT_MS) throw new Error('The on-VM agent did not come online (8 min).');
+    try {
+      const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command: 'true' });
+      const ec = deepFind(r, 'exit_code');
+      if (ec === 0 || ec === '0') { send('status', { message: 'Agent online. Deploying…' }); break; }
+    } catch { /* agent still initialising */ }
+    send('status', { message: `Waiting for the server agent… ${Math.round((Date.now() - t1) / 1000)}s` });
+    await sleep(15000);
+  }
+  if (isAborted()) return {};
+
+  // 4. Deploy — one run_command per step (fresh shell each; no cd/&&/redirection).
+  const run = async (command) => {
+    send('status', { message: `run_command: ${command.length > 60 ? command.slice(0, 57) + '…' : command}` });
+    log(`$ ${command}\n`);
+    const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command });
+    const stdout = deepFind(r, 'stdout') || '';
+    const stderr = deepFind(r, 'stderr') || '';
+    const ec = deepFind(r, 'exit_code');
+    const body = [stdout, stderr].filter(Boolean).join('\n').trim();
+    log(`${body ? body + '\n' : ''}[exit ${ec}]\n\n`);
+    return { ec, stdout, stderr };
+  };
+  await run(`git clone ${cloneUrl} /opt/app`);
+  await run('npm install --prefix /opt/app --omit=dev');
+  await run('npm install -g pm2');
+  await run(`ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=${c.app_port} pm2 start npm --name app --cwd /opt/app -- start`);
+  await run('pm2 save');
+
+  // 5. QA.
+  await run('pm2 status');
+  const health = await run(`curl -I -s http://localhost:${c.app_port}`);
+  const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(`${health.stdout} ${health.stderr}`);
+  send('status', { message: ok ? '✅ Health check returned 200.' : '⚠️ Health check did not return 200 — see the log.' });
+  log(`\n========================================\n${ok ? '✅ DEPLOYED' : '⚠️ DEPLOY FINISHED (health ≠ 200)'}\nLIVE URL:  http://${publicIp}\nPUBLIC IP: ${publicIp}\n========================================\n`);
+  return { publicIp, ok };
 }
 
 // Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
@@ -1392,13 +1466,9 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    // ---- Stage 3: autonomous deploy + QA via the MCP's run_command tool. ----
-    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
-    await runMcpDeploy({
-      model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary: manifest.summary,
-      send, setStream: (s) => { stream = s; }, isAborted: () => aborted,
-    });
-    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true });
+    // ---- Stage 3: deterministic deploy + QA (provision/poll done in Node). ----
+    const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true, liveUrl: dep && dep.publicIp ? `http://${dep.publicIp}` : null });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });
@@ -1418,7 +1488,6 @@ app.get('/api/admin/pipeline/deploy-stream', async (req, res) => {
   if (!repoUrl) return res.status(400).json({ error: 'No repo URL — generate a POC first, or pass ?repo=…' });
   const cloneUrl = /\.git$/.test(repoUrl) ? repoUrl : `${repoUrl.replace(/\/$/, '')}.git`;
 
-  const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
   const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
   if (!mcpUrl) return res.status(400).json({ error: 'No MCP configured — set the MCP URL and Connect in Admin → AI Pipeline.' });
   let mcpToken = '';
@@ -1435,21 +1504,16 @@ app.get('/api/admin/pipeline/deploy-stream', async (req, res) => {
   res.flushHeaders();
   const send = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ } };
 
-  let stream = null;
   let aborted = false;
-  req.on('close', () => { aborted = true; if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
+  req.on('close', () => { aborted = true; });
 
   try {
     // Best-effort: make sure the repo is public so the fresh server can clone it.
     send('status', { message: 'Ensuring the repo is public so the server can clone it…' });
     if (GITHUB_TOKEN) await github.setRepoPublic(GITHUB_TOKEN, repoUrl);
 
-    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
-    await runMcpDeploy({
-      model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary: '',
-      send, setStream: (s) => { stream = s; }, isAborted: () => aborted,
-    });
-    send('done', { repoUrl, deployed: true });
+    const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
+    send('done', { repoUrl, deployed: true, liveUrl: dep && dep.publicIp ? `http://${dep.publicIp}` : null });
   } catch (err) {
     console.error('deploy stream failed:', err.message);
     send('error', { error: err.message });

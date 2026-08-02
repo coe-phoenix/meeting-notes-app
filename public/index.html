@@ -312,15 +312,21 @@
       <input type="checkbox" id="pipeDeploy" style="width:18px; height:18px;" />
       Autonomous deploy — after the PR, spin up a server via MCP and deploy (Phase 4/5)
     </label>
-    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, Claude provisions a <b>fresh Amazon Lightsail server (1 GB, Singapore)</b> via <code>create_server</code>, then via <code>run_command</code>: stops nginx to free port 80, <code>git clone</code>s the (public) repo, <code>npm install</code>, starts it under pm2 on port 80 with this app's <code>ANTHROPIC_API_KEY</code> passed inline, then curls a health check. This actually mutates live infrastructure and spends money — use only against your own Dojo account.</p>
+    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, the server provisions a <b>fresh Amazon Lightsail box (1 GB, Singapore)</b> and deploys to it. This runs <b>deterministically in Node</b> (no AI in the provisioning/wait loop, so the 3–5 min spin-up costs no tokens). It mutates live infrastructure and spends money — use only against your own Dojo account.</p>
     <div id="pipeDeployWrap" class="hidden">
-      <label style="margin-top:8px;">Deploy instructions (Phase 4/5, editable)</label>
-      <textarea id="pipeDeployInstructions" style="min-height:150px;"></textarea>
-      <a class="link" id="pipeDeployReset" style="font-size:0.8rem; display:inline-block; margin-top:4px;">Reset deploy instructions to default</a>
+      <div class="sub" style="margin-top:6px; line-height:1.7;">Fixed deploy steps (run via the Dojo MCP):
+        <ol style="margin:4px 0 0 18px; padding:0;">
+          <li><code>create_server</code> (Lightsail 8 / region 15 / plan 57 / project 17)</li>
+          <li>poll <code>get_server</code> until a public IP is assigned</li>
+          <li>poll <code>run_command</code> until the on-VM agent answers</li>
+          <li><code>git clone</code> the public repo → <code>npm install</code> → <code>pm2 start npm -- start</code> (port 80, <code>ANTHROPIC_API_KEY</code> inline)</li>
+          <li>QA: <code>pm2 status</code> + <code>curl -I http://localhost</code> → live-URL banner</li>
+        </ol>
+      </div>
 
       <div style="margin-top:14px; padding:12px; border:1px dashed #2a2e37; border-radius:8px;">
         <label style="font-weight:600;">🧪 Test deploy only (existing repo)</label>
-        <p class="sub" style="margin:2px 0 6px;">Run just the deploy + QA stage against a repo that already exists — provision → stop nginx → git clone → pm2 start → health check. No code-gen, no new repo.</p>
+        <p class="sub" style="margin:2px 0 6px;">Run just the deploy + QA stage against a repo that already exists — provision → git clone → pm2 start → health check. No code-gen, no new repo.</p>
         <input id="pipeDeployRepo" placeholder="https://github.com/owner/repo" style="width:100%; box-sizing:border-box; font-size:15px; padding:9px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
         <div class="btn-row" style="margin-top:8px;">
           <button class="btn-primary" id="pipeDeployOnlyBtn">Run deploy only →</button>
@@ -1634,10 +1640,8 @@ async function loadPipelineConfig() {
     if (!c.mcpCallbackReady) document.getElementById('pipeMcpStatus').textContent = 'Set APP_BASE_URL on the server to enable OAuth connect.';
     document.getElementById('pipeDeploy').checked = !!c.deploy;
     document.getElementById('pipeDeployWrap').classList.toggle('hidden', !c.deploy);
-    document.getElementById('pipeDeployInstructions').value = c.deployInstructions || '';
     const repoInput = document.getElementById('pipeDeployRepo');
     if (repoInput && !repoInput.value) repoInput.value = c.lastRepo || '';
-    window.__pipeDeployDefault = c.defaultDeployInstructions || '';
     window.__pipeDefault = c.defaultInstructions || '';
     // Flag saved instructions that predate the current file-manifest format.
     const stale = !String(c.instructions || '').includes('<<<<FILE:');
@@ -1660,7 +1664,6 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
         mcpUrl: document.getElementById('pipeMcpUrl').value,
         mcpToken: document.getElementById('pipeMcpToken').value,
         deploy: document.getElementById('pipeDeploy').checked,
-        deployInstructions: document.getElementById('pipeDeployInstructions').value,
       }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
@@ -1694,7 +1697,9 @@ document.getElementById('pipeDeployOnlyBtn').onclick = () => {
   es.addEventListener('done', (e) => {
     finished = true;
     const d = JSON.parse(e.data);
-    status.innerHTML = d.deployed ? '🚀 Deploy finished — see the log above for the live URL & public IP.' : 'Done.';
+    status.innerHTML = d.liveUrl
+      ? `🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a>`
+      : (d.deployed ? '🚀 Deploy finished — see the log above for the live URL & public IP.' : 'Done.');
     es.close(); btn.disabled = false;
   });
   es.addEventListener('error', (e) => {
@@ -1704,12 +1709,6 @@ document.getElementById('pipeDeployOnlyBtn').onclick = () => {
     status.textContent = 'Error: ' + msg;
     es.close(); btn.disabled = false;
   });
-};
-document.getElementById('pipeDeployReset').onclick = () => {
-  if (window.__pipeDeployDefault) {
-    document.getElementById('pipeDeployInstructions').value = window.__pipeDeployDefault;
-    document.getElementById('pipeSaveStatus').textContent = 'Deploy instructions reset — click Save to apply.';
-  }
 };
 
 // MCP OAuth connect: open the sign-in popup, refresh state when it reports back.
@@ -1840,7 +1839,9 @@ document.getElementById('pipeRunBtn').onclick = () => {
     if (d.repo) html += `<div><strong>${escapeHtml(d.repo)}</strong>${d.files ? ` · ${d.files.length} file(s)` : ''}</div>`;
     if (d.prUrl) html += `<div style="margin-top:4px;">✓ <a class="link" href="${escapeHtml(d.prUrl)}" target="_blank" rel="noopener">View pull request →</a></div>`;
     else if (d.note) html += `<div style="margin-top:4px;">${escapeHtml(d.note)}</div>`;
-    if (d.deployed) html += `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed via MCP — see the log above for the live URL &amp; public IP.</div>`;
+    if (d.deployed) html += d.liveUrl
+      ? `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a></div>`
+      : `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed via MCP — see the log above for the live URL &amp; public IP.</div>`;
     if (d.files && d.files.length) html += `<div style="margin-top:6px; color:#9a9aa2; font-size:13px;">${d.files.map((f) => '📄 ' + escapeHtml(f)).join('<br>')}</div>`;
     result.innerHTML = html || 'Finished.';
     result.classList.remove('hidden');
