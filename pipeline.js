@@ -31,6 +31,8 @@ FORMAT: Write phases 1–4 below as normal, readable Markdown prose — real hea
 
 [4. How to run] — Prerequisites, env vars, and the commands to run it locally.
 
+RUNNABILITY CONTRACT (required — the POC is auto-deployed and health-checked by \`npm start\`): The project MUST be a Node.js app whose \`package.json\` has a \`"start"\` script that launches an HTTP server (e.g. \`"start": "node server.js"\`). The server MUST listen on \`process.env.PORT\` (falling back to a default) and bind \`0.0.0.0\`, and its \`GET /\` route MUST return HTTP 200. Keep dependencies light and standard (avoid heavy native/browser deps like Playwright/Puppeteer unless essential). \`npm install\` followed by \`npm start\` must boot a server that answers 200 on \`/\` with no arguments.
+
 Do NOT deploy anything, do NOT write secrets, and do NOT assume any infrastructure. Your only deliverable is the code + docs, which a human will review as a pull request.
 
 AI PROVIDER: If the POC needs an LLM or any AI capability, use Anthropic's Claude API (the \`@anthropic-ai/sdk\` npm package, or the REST API) with an \`ANTHROPIC_API_KEY\` environment variable — do NOT use OpenAI or any other provider. Include \`ANTHROPIC_API_KEY\` (and any other needed variables) in a generated \`.env.example\` file, and read config from environment variables.

@@ -20,6 +20,7 @@ const pipeline = require('./pipeline');
 const github = require('./github');
 const mcpoauth = require('./mcpoauth');
 const mcpclient = require('./mcpclient');
+const sshdeploy = require('./sshdeploy');
 
 const execFileP = promisify(execFile);
 
@@ -1279,11 +1280,43 @@ async function mcpAccessToken() {
 const DEPLOY_CFG = {
   cloud_provider_id: 8, region_id: 15, cloud_service_plan_id: 57, support_level_id: 1,
   project_id: 17, admin_email: 'eddiesoo612@gmail.com',
-  // The Lightsail image runs nginx+docker on :80 and run_command can't stop it
-  // (systemctl stop / docker stop aren't allowlisted), so run the app on a free
-  // port and open the firewall for it.
-  app_port: 3000,
+  // We deploy over SSH (full root shell), so we CAN stop nginx and take port 80.
+  app_port: 80,
 };
+
+// The remote deploy script, run over SSH (full shell — chaining/redirection OK,
+// unlike run_command). Frees port 80, installs Node/npm/git, clones the public
+// repo, and starts it under pm2. The API key is passed inline and never echoed
+// (no `set -x`). ${…} are JS interpolations; $(…)/$cid are literal shell.
+function deployScript({ cloneUrl, anthropicKey, port }) {
+  return `set -e
+export DEBIAN_FRONTEND=noninteractive
+echo '[1/6] Freeing port ${port} (stop nginx)'
+systemctl stop nginx 2>/dev/null || true
+systemctl disable nginx 2>/dev/null || true
+for cid in $(docker ps --filter 'publish=${port}' -q 2>/dev/null); do docker stop "$cid" || true; done
+echo '[2/6] Installing Node.js, npm, git (this can take ~1–2 min)'
+apt-get update -y -qq >/dev/null
+apt-get install -y -qq nodejs npm git curl >/dev/null
+echo "node $(node -v) / npm $(npm -v)"
+echo '[3/6] Cloning repo'
+rm -rf /opt/app
+git clone --depth 1 ${cloneUrl} /opt/app
+echo '[4/6] Installing dependencies'
+npm install --prefix /opt/app --omit=dev --no-audit --no-fund
+echo '[5/6] Starting under pm2 on port ${port}'
+npm install -g pm2 --no-audit --no-fund
+pm2 delete app 2>/dev/null || true
+ANTHROPIC_API_KEY='${anthropicKey}' PORT=${port} pm2 start npm --name app --cwd /opt/app -- start
+pm2 save 2>/dev/null || true
+sleep 5
+echo '[6/6] QA'
+pm2 status
+echo '--- health check ---'
+curl -I -s -m 10 http://localhost:${port} || echo 'curl failed'
+echo '=== DEPLOY DONE ==='
+`;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Pull a value for `key` out of an MCP tool result no matter how it's nested.
 function deepFind(obj, key) {
@@ -1307,12 +1340,12 @@ function mcpResultObj(result) {
   try { return JSON.parse(txt); } catch { return { _text: txt }; }
 }
 
-// Stage 3: autonomous deploy + QA of an already-pushed public repo — DETERMINISTIC.
-// The provision + the 3–5 min "wait for the VM/agent" loop are done here in Node
-// (server-side sleeps), NOT by Claude, so the long wait costs ZERO model tokens.
-// Calls the Dojo MCP tools directly via mcpclient: create_server → poll
-// get_server for a public IP → poll run_command until the agent answers → run the
-// git/npm/pm2 deploy → QA. Progress streams over SSE (`send`); `isAborted` polls.
+// Stage 3: autonomous deploy + QA of an already-pushed public repo — DETERMINISTIC
+// (no model tokens; the long provision wait is Node sleeps, not Claude turns).
+// Dojo tools are called directly via mcpclient: create_server → poll get_server
+// for a public IP → add_ssh_key. The actual install/deploy runs over SSH (full
+// root shell), because run_command's allowlist can't install a Node runtime.
+// Progress streams over SSE (`send`); `isAborted` polls.
 async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
   const c = DEPLOY_CFG;
   const call = (name, args) => mcpclient.callTool(mcpUrl, mcpToken, name, args).then(mcpResultObj);
@@ -1348,83 +1381,46 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
     const s = await call('get_server', { project_id: c.project_id, server_id: serverId });
     publicIp = deepFind(s, 'public_ip') || deepFind(s, 'publicIp') || deepFind(s, 'ip');
     if (!vmId) vmId = deepFind(s, 'vm_id');
-    if (publicIp && String(publicIp).length > 6) { send('status', { message: `Server ready at ${publicIp}.` }); break; }
-    send('status', { message: `Provisioning… ${Math.round((Date.now() - t0) / 1000)}s elapsed (status ${deepFind(s, 'status')})` });
+    const st = deepFind(s, 'status');
+    // Wait for BOTH a public IP and status=1 (ready). Adding the SSH key before
+    // the box is ready never propagates — it must be applied once it's up.
+    if (publicIp && String(publicIp).length > 6 && (st === 1 || st === '1')) { send('status', { message: `Server ready at ${publicIp}.` }); break; }
+    send('status', { message: `Provisioning… ${Math.round((Date.now() - t0) / 1000)}s elapsed (status ${st})` });
     await sleep(15000);
   }
   if (isAborted()) return {};
   log(`✔ Public IP: ${publicIp}\n`);
   if (!vmId) throw new Error('Server is up but no vm_id was returned — cannot run_command.');
 
-  // Open the firewall for the app port (nginx already owns :80). Best-effort —
-  // a duplicate rule is harmless.
-  send('status', { message: `Opening firewall tcp/${c.app_port}…` });
+  // Best-effort: make sure port 80 is open in the cloud firewall.
   try {
     await call('add_firewall_rule', { vm_id: vmId, project_id: c.project_id, port: String(c.app_port), protocol: 'tcp', sources: ['0.0.0.0/0'] });
-    log(`✔ firewall: opened tcp/${c.app_port}\n`);
-  } catch (e) { log(`(firewall rule not added — may already exist: ${e.message})\n`); }
+  } catch { /* rule may already exist */ }
 
-  // 3. Deploy — one run_command per step (fresh shell each; no cd/&&/redirection).
-  // NOTE: run_command only permits allowlisted commands (ls/cat/df/systemctl
-  // status/docker ps + git/npm/pm2/curl) — do NOT probe with `true`. The on-VM
-  // agent can lag the public IP, so the FIRST command retries until it answers
-  // (a thrown error or a result with no exit_code = agent not ready yet).
-  const run = async (command, { retryMs = 0 } = {}) => {
-    const deadline = Date.now() + retryMs;
-    for (;;) {
-      if (isAborted()) return { ec: undefined, stdout: '', stderr: '' };
-      const waiting = retryMs && Date.now() < deadline;
-      try {
-        send('status', { message: `run_command: ${command.length > 60 ? command.slice(0, 57) + '…' : command}` });
-        const r = await call('run_command', { vm_id: vmId, project_id: c.project_id, command });
-        const ec = deepFind(r, 'exit_code');
-        if (ec === undefined && waiting) { // agent likely not ready — retry
-          send('status', { message: 'Waiting for the server agent to accept commands…' });
-          await sleep(12000); continue;
-        }
-        const stdout = deepFind(r, 'stdout') || '';
-        const stderr = deepFind(r, 'stderr') || '';
-        log(`$ ${command}\n${[stdout, stderr].filter(Boolean).join('\n').trim()}\n[exit ${ec}]\n\n`);
-        return { ec, stdout, stderr };
-      } catch (e) {
-        if (waiting) { send('status', { message: 'Waiting for the server agent to accept commands…' }); await sleep(12000); continue; }
-        throw e;
-      }
-    }
-  };
-  // Preflight (also waits for the agent): is Node/npm even present? Dojo's stock
-  // Lightsail image ships nginx+docker but NO Node, and run_command cannot install
-  // it (apt-get and `docker run` are both blocked by the allowlist). Fail loudly
-  // here rather than emitting a fake "live URL" for an app that never started.
-  send('status', { message: 'Checking the server for Node.js…' });
-  const npmv = await run('npm -v', { retryMs: 5 * 60 * 1000 });
-  if (npmv.ec !== 0) {
-    log('\n========================================\n❌ DEPLOY BLOCKED — Node.js is not installed on this server.\n' +
-      "Dojo's stock image has no Node/npm, and run_command's allowlist can't install it\n" +
-      '(apt-get and `docker run` are both rejected). A generated Node POC cannot be\n' +
-      'started here via run_command. Options: (1) a Dojo image/plan with Node preinstalled,\n' +
-      '(2) an SSH-based deploy (add_ssh_key + ssh from this app, like the manual playbook),\n' +
-      "or (3) have Dojo widen the run_command allowlist. The server IP is below if you\n" +
-      'want to finish by hand.\n' +
-      `PUBLIC IP: ${publicIp}\n========================================\n`);
-    return { publicIp, ok: false, blocked: true, liveUrl: null };
+  // 3. SSH-based deploy. run_command can't install Node (apt/docker run blocked),
+  // so add an ephemeral SSH key to the box and run an unrestricted script over
+  // SSH (full root shell). Streams the remote output live.
+  const key = await sshdeploy.genKeyPair();
+  try {
+    send('status', { message: 'Registering a deploy SSH key on the server…' });
+    await call('add_ssh_key', { vm_id: vmId, project_id: c.project_id, name: `deploy-${Date.now().toString(36)}`, public_key: key.publicKey });
+
+    send('status', { message: 'Waiting for SSH to come up…' });
+    const up = await sshdeploy.waitForSsh({ host: publicIp, keyPath: key.keyPath, onStatus: (m) => send('status', { message: m }), isAborted });
+    if (!up) return {}; // aborted
+
+    send('status', { message: 'Connected over SSH — installing Node, cloning, starting the app…' });
+    const script = deployScript({ cloneUrl, anthropicKey: ANTHROPIC_API_KEY, port: c.app_port });
+    const { code, output } = await sshdeploy.runScript({ host: publicIp, keyPath: key.keyPath, script, onData: (t) => log(t) });
+
+    const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(output);
+    const liveUrl = ok ? `http://${publicIp}${c.app_port === 80 ? '' : ':' + c.app_port}` : null;
+    send('status', { message: ok ? '✅ App is live (HTTP 200).' : `❌ Deploy failed (ssh exit ${code}, no HTTP 200).` });
+    log(`\n========================================\n${ok ? `✅ DEPLOYED\nLIVE URL:  ${liveUrl}` : '❌ DEPLOY FAILED (no HTTP 200 — see the log above)'}\nPUBLIC IP: ${publicIp}\n========================================\n`);
+    return { publicIp, ok, liveUrl };
+  } finally {
+    sshdeploy.cleanup(key.dir);
   }
-
-  send('status', { message: 'Node found — deploying…' });
-  await run(`git clone ${cloneUrl} /opt/app`);
-  await run('npm install --prefix /opt/app --omit=dev');
-  await run('npm install -g pm2');
-  await run(`ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=${c.app_port} pm2 start npm --name app --cwd /opt/app -- start`);
-  await run('pm2 save');
-
-  // 5. QA — only a real HTTP 200 counts as deployed.
-  await run('pm2 status');
-  const health = await run(`curl -I -s http://localhost:${c.app_port}`);
-  const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(`${health.stdout} ${health.stderr}`);
-  const liveUrl = ok ? `http://${publicIp}:${c.app_port}` : null;
-  send('status', { message: ok ? '✅ Health check returned 200.' : '❌ App did not return 200 — deploy failed.' });
-  log(`\n========================================\n${ok ? `✅ DEPLOYED\nLIVE URL:  ${liveUrl}` : '❌ DEPLOY FAILED (no HTTP 200 from the app)'}\nPUBLIC IP: ${publicIp}\n========================================\n`);
-  return { publicIp, ok, liveUrl };
 }
 
 // Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
