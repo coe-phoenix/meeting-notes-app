@@ -321,12 +321,9 @@
     <input id="pipeMcpToken" type="password" placeholder="Static token (only if your MCP uses one; leave blank otherwise)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     <div class="status" id="pipeMcpStatus"></div>
 
-    <label style="margin-top:14px; display:flex; align-items:center; gap:8px; cursor:pointer;">
-      <input type="checkbox" id="pipeDeploy" style="width:18px; height:18px;" />
-      Autonomous deploy — after the PR, spin up a server via MCP and deploy (Phase 4/5)
-    </label>
-    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, the server provisions a <b>fresh Amazon Lightsail box (1 GB, Singapore)</b> and deploys to it. This runs <b>deterministically in Node</b> (no AI in the provisioning/wait loop, so the 3–5 min spin-up costs no tokens). It mutates live infrastructure and spends money — use only against your own Dojo account.</p>
-    <div id="pipeDeployWrap" class="hidden">
+    <label style="margin-top:14px;">Autonomous deploy</label>
+    <p class="sub" style="margin:2px 0 6px;">⚠ Runs <b>automatically whenever the MCP is connected</b>: after the repo, the server provisions a <b>fresh Amazon Lightsail box (1 GB, Singapore)</b> and deploys to it (steps below), then hands back a live URL. It mutates live infrastructure and spends money (a new VM per run) — connect only your own Dojo account. To turn it off, disconnect the MCP above.</p>
+    <div id="pipeDeployWrap">
       <div class="sub" style="margin-top:6px; line-height:1.7;">Fixed deploy steps (run via the Dojo MCP):
         <ol style="margin:4px 0 0 18px; padding:0;">
           <li><code>create_server</code> (Lightsail 8 / region 15 / plan 57 / project 17)</li>
@@ -1728,8 +1725,6 @@ async function loadPipelineConfig() {
     document.getElementById('pipeMcpDisconnect').classList.toggle('hidden', !c.mcpConnected);
     document.getElementById('pipeMcpConnect').textContent = c.mcpConnected ? 'Reconnect' : 'Connect (sign in via browser)';
     if (!c.mcpCallbackReady) document.getElementById('pipeMcpStatus').textContent = 'Set APP_BASE_URL on the server to enable OAuth connect.';
-    document.getElementById('pipeDeploy').checked = !!c.deploy;
-    document.getElementById('pipeDeployWrap').classList.toggle('hidden', !c.deploy);
     const repoInput = document.getElementById('pipeDeployRepo');
     if (repoInput && !repoInput.value) repoInput.value = c.lastRepo || '';
     window.__pipeDefault = c.defaultInstructions || '';
@@ -1753,7 +1748,6 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
         model,
         mcpUrl: document.getElementById('pipeMcpUrl').value,
         mcpToken: document.getElementById('pipeMcpToken').value,
-        deploy: document.getElementById('pipeDeploy').checked,
       }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
@@ -1766,9 +1760,6 @@ document.getElementById('pipeReset').onclick = () => {
     document.getElementById('pipeInstructions').value = window.__pipeDefault;
     document.getElementById('pipeSaveStatus').textContent = 'Reset to default — click Save to apply.';
   }
-};
-document.getElementById('pipeDeploy').onchange = (e) => {
-  document.getElementById('pipeDeployWrap').classList.toggle('hidden', !e.target.checked);
 };
 document.getElementById('pipeDeployOnlyBtn').onclick = () => {
   const btn = document.getElementById('pipeDeployOnlyBtn');

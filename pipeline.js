@@ -27,11 +27,19 @@ FORMAT: Write phases 1–4 below as normal, readable Markdown prose — real hea
 
 [2. Architecture Blueprint] — The smallest technical design that meets the AC. Forbid gold-plating: no features outside the AC.
 
-[3. Implementation] — Briefly describe the files you're creating and the key logic. Use real logic and environment variables for any keys/config — NO hardcoded mock data, fake responses, or simulated timeouts. Keep it demo-ready and minimal.
+[3. Implementation] — Briefly describe the files you're creating and the key logic.
+
+FUNCTIONING PRODUCT — NOT A MOCK (the single most important rule): This POC is deployed to a live server and handed to a real end user to actually try the ONE core feature. It MUST genuinely work end to end. Therefore:
+- Serve a real, usable web UI at \`GET /\` (an HTML page with the actual interaction — a form, buttons, inputs — that lets a person exercise the feature), plus whatever API routes it needs.
+- Implement REAL logic. NO hardcoded/mock/canned responses, NO fake data, NO \`setTimeout\` fake latency, NO stubbed functions, NO "TODO"/"not implemented", NO commented-out core logic. If the feature says "summarize/classify/extract/answer/fill", it must really do that on the user's input.
+- If the feature needs AI, actually call Claude (see AI PROVIDER below) with the user's real input and return the real result. Do not simulate the model.
+- If it needs to persist data, use a real store (in-memory or a file/SQLite is fine for a POC) — but it must actually round-trip.
+- The demo must be self-contained: it needs only \`ANTHROPIC_API_KEY\` (already injected at deploy) and \`PORT\`; no other credentials, no external paid services, no manual setup steps.
+Imagine the end user opening the live URL on their phone and using the feature once — that flow must succeed for real.
 
 [4. How to run] — Prerequisites, env vars, and the commands to run it locally.
 
-RUNNABILITY CONTRACT (required — the POC is auto-deployed and health-checked by \`npm start\`): The project MUST be a Node.js app whose \`package.json\` has a \`"start"\` script that launches an HTTP server (e.g. \`"start": "node server.js"\`). The server MUST listen on \`process.env.PORT\` (falling back to a default) and bind \`0.0.0.0\`, and its \`GET /\` route MUST return HTTP 200. Keep dependencies light and standard (avoid heavy native/browser deps like Playwright/Puppeteer unless essential). \`npm install\` followed by \`npm start\` must boot a server that answers 200 on \`/\` with no arguments.
+RUNNABILITY CONTRACT (required — the POC is auto-deployed and health-checked by \`npm start\`): The project MUST be a Node.js app whose \`package.json\` has a \`"start"\` script that launches an HTTP server (e.g. \`"start": "node server.js"\`). The server MUST listen on \`process.env.PORT\` (falling back to a default) and bind \`0.0.0.0\`, and its \`GET /\` route MUST return HTTP 200 with the real usable UI. Keep dependencies light and standard (avoid heavy native/browser deps like Playwright/Puppeteer unless essential). \`npm install\` followed by \`npm start\` must boot a server that answers 200 on \`/\` and whose feature works with no arguments beyond the env vars.
 
 Do NOT deploy anything, do NOT write secrets, and do NOT assume any infrastructure. Your only deliverable is the code + docs, which a human will review as a pull request.
 

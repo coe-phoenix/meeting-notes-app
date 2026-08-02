@@ -1447,12 +1447,12 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
   const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
   const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
-  const deployEnabled = !!jobs.getSetting('pipeline_deploy');
   const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
-  // The deploy stage (Phase 4/5) needs the MCP bearer; resolve it up front so a
-  // bad connection fails before we stream. Code-gen itself uses no tools.
+  // Deploy runs automatically whenever an MCP is connected — code-gen → repo →
+  // provision → git clone → pm2. Resolve the MCP bearer up front so a bad
+  // connection fails before we stream. Code-gen itself uses no tools.
   let mcpToken = '';
-  if (deployEnabled && mcpUrl) {
+  if (mcpUrl) {
     try { mcpToken = await mcpAccessToken(); }
     catch (err) { return res.status(502).json({ error: `MCP auth failed — reconnect in Admin → AI Pipeline. (${err.message})` }); }
   }
@@ -1493,7 +1493,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
     // ---- Stage 2: create the repo. Always PUBLIC so a deploy server can
     // `git clone` it without credentials. ----
-    const willDeploy = deployEnabled && !!mcpToken && !!mcpUrl;
+    const willDeploy = !!mcpToken && !!mcpUrl; // deploy whenever the MCP is connected
     send('status', { message: `Creating a public repo with ${manifest.files.length} file(s)…` });
     const name = `${manifest.repo}-${Date.now().toString(36)}`;
     const { repoUrl, prUrl, cloneUrl } = await github.createRepoWithPR({
@@ -1505,9 +1505,9 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
     jobs.setSetting('pipeline_last_clone', cloneUrl);
 
     if (!willDeploy) {
-      if (deployEnabled && !mcpToken) {
-        send('status', { message: 'Deploy is ON but no MCP is connected — skipping deploy. Connect the Dojo MCP in Admin → AI Pipeline.' });
-      }
+      send('status', { message: mcpUrl
+        ? 'MCP is not connected — created the repo only. Click Connect in Admin → AI Pipeline to auto-deploy.'
+        : 'No MCP configured — created the repo only. Set the MCP URL + Connect in Admin → AI Pipeline to auto-deploy.' });
       send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths });
       return res.end();
     }
