@@ -72,6 +72,19 @@
   .seg button { background:#1a1d24; color:#c8c8cc; border:none; padding:8px 14px; font-size:0.85rem; font-weight:600; cursor:pointer; }
   .seg button.active { background:#5b8def; color:#fff; }
   .seg button:disabled { opacity:0.4; cursor:not-allowed; }
+  /* Thumb-zone recording bar: fixed to the bottom while recording, big tap targets. */
+  #recBar { position:fixed; left:0; right:0; bottom:0; z-index:60; background:#14171dF2; backdrop-filter:blur(8px);
+            border-top:1px solid #2a2e37; padding:10px calc(12px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); }
+  #recBar .recbar-inner { max-width:640px; margin:0 auto; display:flex; align-items:center; gap:10px; }
+  #recBar .recbar-time { flex:1; min-width:0; font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:8px; }
+  #recBar .recbar-time small { font-size:0.72rem; color:#9a9aa2; font-weight:600; }
+  #recBar.paused .rec-dot { animation:none; background:#e2c455; }
+  .recbtn { min-height:56px; padding:0 18px; border-radius:14px; font-size:1rem; font-weight:700; touch-action:manipulation; }
+  .recbtn-pause { background:#2a2e37; color:#e8e8ea; min-width:104px; }
+  .recbtn-stop { position:relative; overflow:hidden; background:#3a1212; color:#ff9a9a; border:1px solid #e25555; min-width:132px; -webkit-user-select:none; user-select:none; }
+  .recbtn-stop .fill { position:absolute; left:0; top:0; bottom:0; width:0%; background:#e25555; z-index:0; }
+  .recbtn-stop .lbl { position:relative; z-index:1; }
+  .recbtn-stop.arming .lbl { color:#fff; }
 </style>
 </head>
 <body>
@@ -370,6 +383,15 @@
   </div>
 </div>
 
+<!-- Thumb-zone controls while recording: big timer, Pause/Resume, hold-to-stop. -->
+<div id="recBar" class="hidden">
+  <div class="recbar-inner">
+    <div class="recbar-time"><span class="rec-dot"></span><span id="recBarTime">00:00</span><small id="recBarKind"></small></div>
+    <button class="recbtn recbtn-pause" id="pauseBtn">Pause</button>
+    <button class="recbtn recbtn-stop" id="holdStopBtn"><span class="fill" id="holdFill"></span><span class="lbl" id="holdLbl">Hold to stop</span></button>
+  </div>
+</div>
+
 <script>
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
 let currentStream = null, sessionId = null, recording = false, recovering = false;
@@ -390,6 +412,9 @@ let SEGMENT_MS = 5 * 60 * 1000;
 const TIMESLICE_MS = 30 * 1000;
 // Recording heartbeat + keep-awake + level-meter state.
 let elapsedTimer = null, recStartTime = 0;
+// Pause state: paused flag, when the current pause began, and total paused ms so
+// the elapsed timer can exclude paused time.
+let paused = false, pausedAt = 0, pausedTotalMs = 0;
 let wakeLock = null;
 let audioCtx = null, analyser = null, meterRAF = null;
 
@@ -528,15 +553,22 @@ async function idbDeleteSession(sid) {
 
 // ---------- Recording heartbeat (elapsed timer) ----------
 function fmtElapsed() {
-  const s = Math.max(0, Math.floor((Date.now() - recStartTime) / 1000));
+  // Exclude paused time; while paused, the live (now - pausedAt) term freezes it.
+  const inPause = paused ? (Date.now() - pausedAt) : 0;
+  const s = Math.max(0, Math.floor((Date.now() - recStartTime - pausedTotalMs - inPause) / 1000));
   const mm = String(Math.floor(s / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
   return `${mm}:${ss}`;
 }
 
+const kindLabel = () => (captureKind === 'tab' ? 'tab audio' : captureKind === 'tabmic' ? 'tab + mic' : 'mic');
+
 function tickRecStatus() {
-  recStatus.innerHTML = `<span class="rec-dot"></span> Recording${captureKind === 'tab' ? ' (tab audio)' : captureKind === 'tabmic' ? ' (tab + mic)' : ''}… <span class="timer">${fmtElapsed()}</span>`
+  const t = fmtElapsed();
+  recStatus.innerHTML = `<span class="rec-dot"></span> Recording (${kindLabel()})… <span class="timer">${t}</span>`
     + (segmentsTranscribed ? ` · ${segmentsTranscribed} segment(s) saved` : '');
+  const bt = document.getElementById('recBarTime');
+  if (bt) bt.textContent = t;
 }
 
 // ---------- Live audio level meter (proof the mic is alive) ----------
@@ -855,9 +887,13 @@ async function startCapture(kind) {
   acquireWakeLock(); // best-effort; must not delay showing the UI or capturing
   startMeter(currentStream);
   recStartTime = Date.now();
+  paused = false; pausedAt = 0; pausedTotalMs = 0;
   recordBtn.classList.add('hidden');
   if (canCaptureTab) { tabBtn.classList.add('hidden'); tabMicBtn.classList.add('hidden'); tabHint.classList.add('hidden'); }
-  stopBtn.classList.remove('hidden');
+  // Thumb-zone bar replaces the in-card Stop button while recording.
+  document.getElementById('recBarKind').textContent = kindLabel();
+  document.getElementById('pauseBtn').textContent = 'Pause';
+  document.getElementById('recBar').classList.remove('hidden', 'paused');
   tickRecStatus();
   elapsedTimer = setInterval(tickRecStatus, 1000);
 
@@ -874,6 +910,7 @@ if (canCaptureTab) {
 function stopRecording() {
   if (!recording) return;
   recording = false;
+  paused = false;
   clearTimeout(segmentTimer);
   clearInterval(elapsedTimer);
   elapsedTimer = null;
@@ -882,6 +919,7 @@ function stopRecording() {
   recordBtn.classList.remove('hidden');
   if (canCaptureTab) { tabBtn.classList.remove('hidden'); tabMicBtn.classList.remove('hidden'); tabHint.classList.remove('hidden'); }
   stopBtn.classList.add('hidden');
+  document.getElementById('recBar').classList.add('hidden');
   recStatus.textContent = 'Recording stopped — finishing the last segment…';
   // Flushing the last segment triggers handleSegmentStop, which reveals the
   // "Transcribe this recording" button instead of auto-finalizing.
@@ -890,6 +928,58 @@ function stopRecording() {
   teardownMix(); // stop the underlying tab+mic sources and close the mixer
 }
 stopBtn.onclick = stopRecording;
+
+// Pause/Resume: MediaRecorder.pause() halts data + we freeze the timer and the
+// segment-rotation clock; resume continues the same segment.
+function setPaused(p) {
+  if (!recording || p === paused) return;
+  paused = p;
+  const bar = document.getElementById('recBar');
+  const btn = document.getElementById('pauseBtn');
+  if (p) {
+    pausedAt = Date.now();
+    try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause(); } catch { /* ignore */ }
+    clearTimeout(segmentTimer);
+    clearInterval(elapsedTimer); elapsedTimer = null;
+    bar.classList.add('paused');
+    btn.textContent = 'Resume';
+    document.getElementById('recBarTime').textContent = fmtElapsed();
+    recStatus.innerHTML = `<span class="rec-dot"></span> Paused · <span class="timer">${fmtElapsed()}</span>`;
+  } else {
+    pausedTotalMs += Date.now() - pausedAt;
+    try { if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume(); } catch { /* ignore */ }
+    bar.classList.remove('paused');
+    btn.textContent = 'Pause';
+    tickRecStatus();
+    elapsedTimer = setInterval(tickRecStatus, 1000);
+    scheduleRotation();
+  }
+}
+document.getElementById('pauseBtn').onclick = () => setPaused(!paused);
+
+// Hold-to-stop: a deliberate ~800ms press guards against accidental data loss.
+(function setupHoldStop() {
+  const btn = document.getElementById('holdStopBtn');
+  const fill = document.getElementById('holdFill');
+  const lbl = document.getElementById('holdLbl');
+  const HOLD_MS = 800;
+  let timer = null;
+  const reset = () => {
+    clearTimeout(timer); timer = null;
+    fill.style.transition = 'width .15s ease'; fill.style.width = '0%';
+    btn.classList.remove('arming'); lbl.textContent = 'Hold to stop';
+  };
+  const start = (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    btn.classList.add('arming'); lbl.textContent = 'Keep holding…';
+    fill.style.transition = `width ${HOLD_MS}ms linear`;
+    requestAnimationFrame(() => { fill.style.width = '100%'; });
+    timer = setTimeout(() => { reset(); stopRecording(); }, HOLD_MS);
+  };
+  btn.addEventListener('pointerdown', start);
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => btn.addEventListener(ev, reset));
+})();
 
 // Live recording: structuring only runs when the user explicitly asks for it.
 // finalizeSession navigates to the job on success; on error it stays here so the
