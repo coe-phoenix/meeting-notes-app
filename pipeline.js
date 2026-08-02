@@ -54,25 +54,42 @@ Keep the project minimal — a handful of files, under ${MAX_FILES}. Output noth
 // repo/PR already exist — so it deploys the PUBLIC repo to a fresh server. This
 // is the user's pasted DevOps/QA phases, adapted: keys are injected from server
 // config (no pause-and-ask), and it deploys the already-created repo.
-const DEPLOY_INSTRUCTIONS = `You are the DevOps + QA stage of an engineering squad. The POC code has ALREADY been generated and pushed to a public GitHub repository. Your job is to deploy it to a brand-new server and verify it, autonomously, using the connected MCP server's tools (a Dojo-style cloud MCP with a \`run_command\` tool plus tools to provision/list servers).
+const DEPLOY_INSTRUCTIONS = `You are the DevOps + QA stage of an engineering squad. The POC code is ALREADY generated and pushed to a PUBLIC GitHub repository. Deploy it to a fresh Dojo server and verify it — FULLY AUTONOMOUSLY, using the connected Dojo MCP tools. Provisioning and deployment are pre-authorized: do NOT ask the user anything, do NOT wait for confirmation, just run the tools. The repo clone URL and the environment variables to use are given in the message.
+
+Relevant Dojo tools: create_server, get_server, run_command (use list_providers / list_regions / list_service_plans only if a value below is rejected).
 
 **4. DEVOPS PHASE (Deployment)**
-Execute the deployment completely autonomously using the MCP tools.
-- First, provision a FRESH Ubuntu server using the appropriate MCP tool (create/spin-up a VM). Capture its host/IP.
-- CRITICAL EXECUTION RULE: You are strictly forbidden from outputting bash scripts for a human to run, and forbidden from chaining commands with \`&&\`. Execute every step as an individual, isolated \`run_command\` MCP tool call (e.g. Call 1: \`git clone <repo>\`, Call 2: \`npm install\`, Call 3: write the .env, Call 4: \`pm2 start\`). Actually INVOKE the tools — never just print the commands.
-- Install any prerequisites the server lacks (Node.js, git, pm2) via isolated run_command calls.
-- \`git clone\` the public repo, then install dependencies (npm install / pip install) in the project directory.
-- Write the provided environment variables to the project's \`.env\` file via a run_command call BEFORE starting the app.
-- Start the app on port 80 under pm2 (e.g. \`pm2 start\` the entrypoint, or \`npm start\` under pm2), so it survives restarts.
+
+Step 4.1 — Provision a fresh server. Call create_server EXACTLY with these values (do not ask, do not change them, do not send any other fields such as metadata_json/os/webserver — they are invalid):
+  cloud_provider_id: 8          (Amazon Lightsail)
+  region_id: 15                 (Singapore)
+  cloud_service_plan_id: 57     (1 GB RAM tier)
+  support_level_id: 1           (Basic)
+  project_id: 17
+  name: "notetaker-poc-<short random suffix>"
+  admin_email: "eddiesoo612@gmail.com"
+Capture vm_id and server_id from the response.
+
+Step 4.2 — Poll get_server (project_id 17, server_id from 4.1) roughly every 30s until it has a public_ip and is running. Capture public_ip.
+
+Step 4.3 — Deploy via run_command. CRITICAL run_command rules: every call runs ONE command in a FRESH shell — nothing persists between calls. \`cd\`, command chaining (\`&&\` \`;\` \`|\`), output redirection (\`>\`), and \`$()\` are ALL REJECTED. Therefore: never write a file with \`>\`; set the directory with tool flags (\`git -C <dir>\`, \`npm --prefix <dir>\`, pm2 \`--cwd <dir>\`); and pass secrets INLINE as a leading \`VAR=value command\`. Run these as SEPARATE, sequential run_command calls (using vm_id), checking exit_code each time:
+  1. \`systemctl stop nginx\`      — free port 80 (then \`systemctl disable nginx\`). If not permitted, note it and continue.
+  2. \`git clone <cloneUrl> /opt/app\`   — on a redeploy use \`git -C /opt/app pull\` instead.
+  3. \`npm install --prefix /opt/app --omit=dev\`
+  4. \`npm install -g pm2\`   — if pm2 is missing.
+  5. Start on port 80 with env passed INLINE (there is NO .env file — run_command cannot create one):
+     \`<ENV_INLINE> pm2 start /opt/app/server.js --name app --cwd /opt/app\`
+     where <ENV_INLINE> is the provided variables joined with spaces, e.g. \`ANTHROPIC_API_KEY=... PORT=80\`. Use the repo's real entrypoint if it is not server.js (\`pm2 start npm --name app --cwd /opt/app -- start\` also works).
+  6. \`pm2 save\`
 
 **5. QA & VERIFICATION PHASE (Testing)**
-Verify directly on the server via sequential \`run_command\` calls:
-- Call 1: \`pm2 status\` — confirm the process is running cleanly (not errored/looping).
-- Call 2: \`curl -I -s http://localhost\` (or the correct internal port) — confirm an \`HTTP/…​ 200\` response.
-- Print a clear SUCCESS or FAILURE message based on the HTTP status.
-- End with a prominent banner containing the final LIVE URL and the PUBLIC IP.
+Via run_command (vm_id):
+- \`pm2 status\` — confirm the app process is "online", not errored/looping.
+- \`curl -I -s http://localhost\` — confirm an \`HTTP/… 200\` response.
+- Print a clear SUCCESS or FAILURE line based on the HTTP status.
+- End with a prominent banner containing the LIVE URL (http://<public_ip>) and the PUBLIC IP.
 
-Output your response under the headers \`[4. Deployment Execution]\` and \`[5. QA & Verification Report]\`, detailing the exact commands you successfully executed via the tools. Do NOT deploy to any existing production system — only the fresh server you just provisioned.`;
+Output under the headers \`[4. Deployment Execution]\` and \`[5. QA & Verification Report]\`, listing the exact commands you ran and their results. Only ever touch the fresh server you just provisioned — never an existing production system.`;
 
 function slugify(s, fallback = 'poc') {
   const out = String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);

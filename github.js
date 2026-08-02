@@ -80,4 +80,16 @@ async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody,
   return { repoUrl: repo.html_url, prUrl: pr.html_url, cloneUrl: repo.clone_url, branch: base };
 }
 
-module.exports = { createRepoWithPR };
+// Best-effort: make an existing repo public so a server can clone it without
+// auth. repoUrl like https://github.com/owner/name. Returns true/false; never
+// throws (the repo may not be owned by this token).
+async function setRepoPublic(token, repoUrl) {
+  try {
+    const m = String(repoUrl || '').match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!token || !m) return false;
+    await gh(token, 'PATCH', `/repos/${m[1]}/${m[2]}`, { private: false });
+    return true;
+  } catch { return false; }
+}
+
+module.exports = { createRepoWithPR, setRepoPublic };

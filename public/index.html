@@ -312,11 +312,22 @@
       <input type="checkbox" id="pipeDeploy" style="width:18px; height:18px;" />
       Autonomous deploy — after the PR, spin up a server via MCP and deploy (Phase 4/5)
     </label>
-    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, Claude provisions a <b>fresh Ubuntu server</b> and runs shell commands on it via the MCP's <code>run_command</code> tool: git clone (repos are made <b>public</b> so the server can pull), npm install, write <code>.env</code> with this app's <code>ANTHROPIC_API_KEY</code>, start under pm2, then curl a health check. This actually mutates live infrastructure — use only against your own Dojo account.</p>
+    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, Claude provisions a <b>fresh Amazon Lightsail server (1 GB, Singapore)</b> via <code>create_server</code>, then via <code>run_command</code>: stops nginx to free port 80, <code>git clone</code>s the (public) repo, <code>npm install</code>, starts it under pm2 on port 80 with this app's <code>ANTHROPIC_API_KEY</code> passed inline, then curls a health check. This actually mutates live infrastructure and spends money — use only against your own Dojo account.</p>
     <div id="pipeDeployWrap" class="hidden">
       <label style="margin-top:8px;">Deploy instructions (Phase 4/5, editable)</label>
       <textarea id="pipeDeployInstructions" style="min-height:150px;"></textarea>
       <a class="link" id="pipeDeployReset" style="font-size:0.8rem; display:inline-block; margin-top:4px;">Reset deploy instructions to default</a>
+
+      <div style="margin-top:14px; padding:12px; border:1px dashed #2a2e37; border-radius:8px;">
+        <label style="font-weight:600;">🧪 Test deploy only (existing repo)</label>
+        <p class="sub" style="margin:2px 0 6px;">Run just the deploy + QA stage against a repo that already exists — provision → stop nginx → git clone → pm2 start → health check. No code-gen, no new repo.</p>
+        <input id="pipeDeployRepo" placeholder="https://github.com/owner/repo" style="width:100%; box-sizing:border-box; font-size:15px; padding:9px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+        <div class="btn-row" style="margin-top:8px;">
+          <button class="btn-primary" id="pipeDeployOnlyBtn">Run deploy only →</button>
+        </div>
+        <div class="status" id="pipeDeployOnlyStatus"></div>
+        <pre id="pipeDeployOnlyLog" class="hidden" style="max-height:320px; overflow:auto; background:#0f1115; border:1px solid #2a2e37; border-radius:8px; padding:10px; font-size:12px; white-space:pre-wrap; margin-top:8px;"></pre>
+      </div>
     </div>
 
     <label style="margin-top:12px;">Instructions (editable)</label>
@@ -1624,6 +1635,8 @@ async function loadPipelineConfig() {
     document.getElementById('pipeDeploy').checked = !!c.deploy;
     document.getElementById('pipeDeployWrap').classList.toggle('hidden', !c.deploy);
     document.getElementById('pipeDeployInstructions').value = c.deployInstructions || '';
+    const repoInput = document.getElementById('pipeDeployRepo');
+    if (repoInput && !repoInput.value) repoInput.value = c.lastRepo || '';
     window.__pipeDeployDefault = c.defaultDeployInstructions || '';
     window.__pipeDefault = c.defaultInstructions || '';
     // Flag saved instructions that predate the current file-manifest format.
@@ -1663,6 +1676,34 @@ document.getElementById('pipeReset').onclick = () => {
 };
 document.getElementById('pipeDeploy').onchange = (e) => {
   document.getElementById('pipeDeployWrap').classList.toggle('hidden', !e.target.checked);
+};
+document.getElementById('pipeDeployOnlyBtn').onclick = () => {
+  const btn = document.getElementById('pipeDeployOnlyBtn');
+  const status = document.getElementById('pipeDeployOnlyStatus');
+  const log = document.getElementById('pipeDeployOnlyLog');
+  const repo = document.getElementById('pipeDeployRepo').value.trim();
+  if (!repo) { status.textContent = 'Enter a repo URL first.'; return; }
+  if (!confirm('This provisions a REAL Amazon Lightsail server and deploys to it (spends money on your Dojo account). Continue?')) return;
+  btn.disabled = true;
+  log.textContent = ''; log.classList.remove('hidden');
+  status.innerHTML = '<span class="spinner"></span>Starting deploy…';
+  let finished = false;
+  const es = new EventSource(`/api/admin/pipeline/deploy-stream?repo=${encodeURIComponent(repo)}`);
+  es.addEventListener('status', (e) => { status.innerHTML = '<span class="spinner"></span>' + escapeHtml(JSON.parse(e.data).message); });
+  es.addEventListener('delta', (e) => { log.textContent += JSON.parse(e.data).text; log.scrollTop = log.scrollHeight; });
+  es.addEventListener('done', (e) => {
+    finished = true;
+    const d = JSON.parse(e.data);
+    status.innerHTML = d.deployed ? '🚀 Deploy finished — see the log above for the live URL & public IP.' : 'Done.';
+    es.close(); btn.disabled = false;
+  });
+  es.addEventListener('error', (e) => {
+    if (finished) return;
+    let msg = 'Connection lost — check the server logs.';
+    try { if (e.data) msg = JSON.parse(e.data).error; } catch { /* native */ }
+    status.textContent = 'Error: ' + msg;
+    es.close(); btn.disabled = false;
+  });
 };
 document.getElementById('pipeDeployReset').onclick = () => {
   if (window.__pipeDeployDefault) {

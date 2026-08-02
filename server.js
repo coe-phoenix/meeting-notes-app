@@ -1122,6 +1122,9 @@ app.get('/api/admin/pipeline/config', (req, res) => {
     deploy: !!jobs.getSetting('pipeline_deploy'),
     deployInstructions: jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS,
     defaultDeployInstructions: pipeline.DEPLOY_INSTRUCTIONS,
+    // "Deploy only" test button: is deploy runnable, and the last repo to prefill.
+    deployReady: !!(jobs.getSetting('pipeline_mcp_refresh_token') || jobs.getSetting('pipeline_mcp_token')) && !!GITHUB_TOKEN,
+    lastRepo: jobs.getSetting('pipeline_last_repo') || '',
   });
 });
 app.post('/api/admin/pipeline/config', (req, res) => {
@@ -1272,6 +1275,43 @@ async function mcpAccessToken() {
   return jobs.getSetting('pipeline_mcp_token') || '';
 }
 
+// Stage 3: autonomous deploy + QA of an already-pushed public repo, via the
+// MCP's run_command tool. A fresh MCP-connected turn: Claude provisions a Dojo
+// server, clones the repo, starts it under pm2 (env passed inline), and QAs it.
+// Server-side tool use can pause the turn (10 tool-call cap) — resume by
+// re-streaming with the assistant reply appended, up to a hop ceiling. `send`
+// streams SSE, `setStream` exposes the live stream for abort, `isAborted` polls.
+async function runMcpDeploy({ model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary, send, setStream, isAborted }) {
+  const deployInstructions = jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS;
+  const envInline = `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=80`;
+  const mcpBase = {
+    model,
+    max_tokens: 32000,
+    betas: ['mcp-client-2025-11-20'],
+    system: deployInstructions,
+    mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
+    tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
+  };
+  let convo = [{ role: 'user', content:
+    'Deploy and verify this POC now, autonomously via the Dojo MCP tools. Do not ask me anything.\n\n' +
+    `Repo: ${repoUrl}\nClone URL (public, no auth): ${cloneUrl}\n${summary ? `Summary: ${summary}\n` : ''}\n` +
+    `Environment variables to run the app with (pass them INLINE to pm2 — there is no .env file):\n${envInline}\n\n` +
+    'Provision a fresh Ubuntu server (Amazon Lightsail, Singapore, 1 GB, project 17), stop nginx to free port 80, deploy on port 80 under pm2, then run the Phase 5 QA checks and print the live URL + public IP banner.' }];
+  for (let hop = 0; hop < 40 && !isAborted(); hop++) {
+    const stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
+    setStream(stream);
+    stream.on('text', (delta) => send('delta', { text: delta }));
+    stream.on('streamEvent', (ev) => {
+      if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
+        send('status', { message: `MCP tool: ${ev.content_block.name}…` });
+      }
+    });
+    const msg = await stream.finalMessage();
+    if (msg.stop_reason !== 'pause_turn') break;
+    convo = [...convo, { role: 'assistant', content: msg.content }];
+  }
+}
+
 // Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
 // completion, parse the file manifest and open a PR in a new private repo.
 app.get('/api/admin/pipeline/stream', async (req, res) => {
@@ -1340,6 +1380,9 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
       prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary, isPublic: willDeploy,
     });
+    // Remember the last repo so the "Deploy only" test button can prefill it.
+    jobs.setSetting('pipeline_last_repo', repoUrl);
+    jobs.setSetting('pipeline_last_clone', cloneUrl);
 
     if (!willDeploy) {
       if (deployEnabled && !mcpToken) {
@@ -1349,20 +1392,66 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    // ---- Stage 3: autonomous deploy (SSH model — being finalized). The Dojo MCP
-    // has NO run_command/shell tool, so deploy is: provision a server + register
-    // an SSH key via the MCP's own tools (create_server / add_ssh_key), then SSH
-    // in from this app to run git clone / npm / pm2. Wiring the exact tool params
-    // requires the MCP's tool schemas (Admin → AI Pipeline → Inspect MCP tools).
-    // Until that's wired, we finish at the PR and say so rather than run a flow
-    // that assumes a tool that doesn't exist. ----
-    send('status', { message: 'PR created. SSH-based deploy is being finalized for Dojo — see the note below.' });
-    send('done', {
-      prUrl, repoUrl, repo: manifest.repo, files: filePaths,
-      note: 'Deploy is ON, but Dojo MCP has no run_command tool — the SSH-based deploy step is still being wired to your create_server/add_ssh_key tools. Use “Inspect MCP tools” in Admin so this can be finalized.',
+    // ---- Stage 3: autonomous deploy + QA via the MCP's run_command tool. ----
+    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
+    await runMcpDeploy({
+      model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary: manifest.summary,
+      send, setStream: (s) => { stream = s; }, isAborted: () => aborted,
     });
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
+    send('error', { error: err.message });
+  } finally {
+    res.end();
+  }
+});
+
+// Deploy-ONLY (SSE): skip code-gen + repo creation and run just the deploy + QA
+// stage against an already-created repo. Lets you iterate on the
+// provision → git clone → stop nginx → pm2 flow without regenerating everything.
+app.get('/api/admin/pipeline/deploy-stream', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured on the server' });
+
+  const repoUrl = String(req.query.repo || jobs.getSetting('pipeline_last_repo') || '').trim();
+  if (!repoUrl) return res.status(400).json({ error: 'No repo URL — generate a POC first, or pass ?repo=…' });
+  const cloneUrl = /\.git$/.test(repoUrl) ? repoUrl : `${repoUrl.replace(/\/$/, '')}.git`;
+
+  const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
+  const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
+  if (!mcpUrl) return res.status(400).json({ error: 'No MCP configured — set the MCP URL and Connect in Admin → AI Pipeline.' });
+  let mcpToken = '';
+  try { mcpToken = await mcpAccessToken(); }
+  catch (err) { return res.status(502).json({ error: `MCP auth failed — reconnect in Admin → AI Pipeline. (${err.message})` }); }
+  if (!mcpToken) return res.status(400).json({ error: 'MCP is not connected — click Connect in Admin → AI Pipeline first.' });
+
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  const send = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ } };
+
+  let stream = null;
+  let aborted = false;
+  req.on('close', () => { aborted = true; if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
+
+  try {
+    // Best-effort: make sure the repo is public so the fresh server can clone it.
+    send('status', { message: 'Ensuring the repo is public so the server can clone it…' });
+    if (GITHUB_TOKEN) await github.setRepoPublic(GITHUB_TOKEN, repoUrl);
+
+    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
+    await runMcpDeploy({
+      model, mcpUrl, mcpToken, repoUrl, cloneUrl, summary: '',
+      send, setStream: (s) => { stream = s; }, isAborted: () => aborted,
+    });
+    send('done', { repoUrl, deployed: true });
+  } catch (err) {
+    console.error('deploy stream failed:', err.message);
     send('error', { error: err.message });
   } finally {
     res.end();
