@@ -16,7 +16,7 @@
     "test:pipeline": "node test-pipeline.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.0",
+    "@anthropic-ai/sdk": "^0.115.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.5",

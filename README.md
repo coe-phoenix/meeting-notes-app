@@ -198,6 +198,14 @@ automatically.
   **new private repo**, commits the files to a `poc` branch, and **opens a PR**.
   Set `GITHUB_TOKEN` (repo scope) and optionally `GITHUB_OWNER`. Without a token,
   it still streams the code but skips the repo.
+- **MCP tools** (Admin page → *AI Pipeline* → *MCP tools*, optional): point the run
+  at an MCP server (e.g. an internal marketplace MCP) so Claude can call its tools
+  while generating the POC. Enter the **endpoint URL** (the Streamable-HTTP path,
+  often ending in `/mcp` — not the site root) and an optional bearer token; both are
+  stored in the DB (`settings` keys `pipeline_mcp_url` / `pipeline_mcp_token`, token
+  never echoed back) and changeable without a redeploy. Uses the Anthropic MCP
+  connector (`anthropic.beta.messages.stream`, beta `mcp-client-2025-11-20`);
+  `pause_turn` tool loops are resumed automatically and live tool calls are shown.
 - **Guardrails** (a transcript is untrusted input): admin-only; new **private**
   repo per run; code behind a **PR** (no auto-merge); **no auto-deploy**; path
   traversal/absolute paths rejected; ≤40 files, ≤256 KB each.

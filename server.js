@@ -1108,13 +1108,20 @@ app.get('/api/admin/pipeline/config', (req, res) => {
     models: pipeline.MODELS,
     githubReady: !!GITHUB_TOKEN,
     owner: GITHUB_OWNER || null,
+    // MCP connector: the URL is not secret; the token is never echoed back.
+    mcpUrl: jobs.getSetting('pipeline_mcp_url') || '',
+    mcpHasToken: !!jobs.getSetting('pipeline_mcp_token'),
   });
 });
 app.post('/api/admin/pipeline/config', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { instructions, model } = req.body || {};
+  const { instructions, model, mcpUrl, mcpToken } = req.body || {};
   if (typeof instructions === 'string') jobs.setSetting('pipeline_instructions', instructions);
   if (typeof model === 'string' && model.trim()) jobs.setSetting('pipeline_model', model.trim());
+  // MCP URL saved as-is (empty string disables the connector). Token is only
+  // updated when a new value is provided — blank leaves the stored one intact.
+  if (typeof mcpUrl === 'string') jobs.setSetting('pipeline_mcp_url', mcpUrl.trim());
+  if (typeof mcpToken === 'string' && mcpToken.trim()) jobs.setSetting('pipeline_mcp_token', mcpToken.trim());
   res.json({ ok: true });
 });
 
@@ -1133,6 +1140,8 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
   const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
   const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
+  const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
+  const mcpToken = jobs.getSetting('pipeline_mcp_token') || '';
 
   res.set({
     'Content-Type': 'text/event-stream',
@@ -1144,19 +1153,52 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
   const send = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ } };
 
   let stream = null;
-  req.on('close', () => { if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
+  let aborted = false;
+  req.on('close', () => { aborted = true; if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
 
-  send('status', { message: `Running ${model} on the meeting minutes…` });
+  send('status', {
+    message: mcpUrl
+      ? `Running ${model} with the connected MCP tools…`
+      : `Running ${model} on the meeting minutes…`,
+  });
   let full = '';
   try {
-    stream = anthropic.messages.stream({
-      model,
-      max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
-      system: instructions,
-      messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
-    });
-    stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
-    await stream.finalMessage();
+    if (mcpUrl) {
+      // MCP connector: Claude can call the configured MCP server's tools
+      // server-side while it works. Server-side tool use can pause the turn
+      // (10-iteration cap) — resume by re-streaming with the assistant reply
+      // appended, until the turn ends. mcp_tool_use blocks are surfaced live.
+      const mcpBase = {
+        model,
+        max_tokens: 32000,
+        betas: ['mcp-client-2025-11-20'],
+        system: instructions,
+        mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
+        tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
+      };
+      let convo = [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }];
+      for (let hop = 0; hop < 8 && !aborted; hop++) {
+        stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
+        stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
+        stream.on('streamEvent', (ev) => {
+          if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
+            send('status', { message: `Calling MCP tool “${ev.content_block.name}”…` });
+          }
+        });
+        const msg = await stream.finalMessage();
+        if (msg.stop_reason !== 'pause_turn') break;
+        convo = [...convo, { role: 'assistant', content: msg.content }];
+      }
+    } else {
+      stream = anthropic.messages.stream({
+        model,
+        max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
+        system: instructions,
+        messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
+      });
+      stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
+      await stream.finalMessage();
+    }
 
     const manifest = pipeline.parseManifest(full);
     if (!manifest) { send('done', { prUrl: null, note: 'No file manifest was produced — showing the generated text only.' }); return res.end(); }

@@ -295,6 +295,11 @@
       <select id="pipeModel" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;"></select>
       <input id="pipeModelCustom" placeholder="or custom id" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     </div>
+    <label style="margin-top:12px;">MCP tools (optional) <span id="pipeMcpState" class="muted"></span></label>
+    <p class="sub" style="margin:2px 0 6px;">Give Claude access to your MCP server's tools during the run. Leave the URL blank to disable. Use the MCP endpoint URL (often ends in <code>/mcp</code>), not the site root.</p>
+    <input id="pipeMcpUrl" placeholder="https://your-mcp.example.com/mcp" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    <input id="pipeMcpToken" type="password" placeholder="Authorization token (optional; leave blank to keep saved)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+
     <label style="margin-top:12px;">Instructions (editable)</label>
     <div id="pipeStaleWarn" class="hidden warn" style="font-size:0.85rem; margin:2px 0 6px;">⚠ These saved instructions are outdated — they don't use the current file format, so runs won't produce a repo. Click “Reset instructions to default”, then Save.</div>
     <textarea id="pipeInstructions" style="min-height:200px;"></textarea>
@@ -1583,6 +1588,12 @@ async function loadPipelineConfig() {
     if (c.models.includes(c.model)) sel.value = c.model;
     else document.getElementById('pipeModelCustom').value = c.model;
     document.getElementById('pipeInstructions').value = c.instructions;
+    document.getElementById('pipeMcpUrl').value = c.mcpUrl || '';
+    document.getElementById('pipeMcpToken').value = '';
+    document.getElementById('pipeMcpToken').placeholder = c.mcpHasToken
+      ? 'Token saved — leave blank to keep, or type a new one'
+      : 'Authorization token (optional)';
+    document.getElementById('pipeMcpState').textContent = c.mcpUrl ? '· connected' : '· not set';
     window.__pipeDefault = c.defaultInstructions || '';
     // Flag saved instructions that predate the current file-manifest format.
     const stale = !String(c.instructions || '').includes('<<<<FILE:');
@@ -1599,10 +1610,16 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
   try {
     const res = await fetch('/api/admin/pipeline/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instructions: document.getElementById('pipeInstructions').value, model }),
+      body: JSON.stringify({
+        instructions: document.getElementById('pipeInstructions').value,
+        model,
+        mcpUrl: document.getElementById('pipeMcpUrl').value,
+        mcpToken: document.getElementById('pipeMcpToken').value,
+      }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
     s.textContent = 'Saved ✓';
+    loadPipelineConfig(); // refresh the token placeholder / connected state
   } catch (e) { s.textContent = 'Error: ' + e.message; }
 };
 document.getElementById('pipeReset').onclick = () => {
