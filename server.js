@@ -1357,15 +1357,18 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
   const serverName = (String(cloneUrl).match(/([^/]+?)(?:\.git)?$/) || [])[1]
     || `notetaker-poc-${Date.now().toString(36)}`;
   send('status', { message: `Provisioning Amazon Lightsail (1 GB, Singapore) as “${serverName}”…` });
+  // Param names MUST match the create_server tool schema exactly: region_id +
+  // cloud_service_plan_id (NOT cloud_region_id/service_plan_id), and no
+  // metadata_json (additionalProperties:false). The image defaults to
+  // ubuntu-24.04 + nginx+docker. Verified against live Dojo (server 182).
   const created = await call('create_server', {
     project_id: c.project_id,
     cloud_provider_id: c.cloud_provider_id,
-    cloud_region_id: c.region_id,
-    service_plan_id: c.cloud_service_plan_id,
+    region_id: c.region_id,
+    cloud_service_plan_id: c.cloud_service_plan_id,
     support_level_id: c.support_level_id,
     name: serverName,
     admin_email: c.admin_email,
-    metadata_json: { os: 'ubuntu24.04', webserver: 'nginx+docker' },
   });
   const serverId = deepFind(created, 'server_id') ?? deepFind(created, 'id');
   let vmId = deepFind(created, 'vm_id');
