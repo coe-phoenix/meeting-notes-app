@@ -308,6 +308,13 @@
       <select id="pipeModel" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;"></select>
       <input id="pipeModelCustom" placeholder="or custom id" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     </div>
+    <label style="margin-top:14px; display:flex; align-items:center; gap:8px; font-weight:600;">
+      <input type="checkbox" id="pipeResearch" style="width:auto;" /> Online research (Stage 0)
+    </label>
+    <p class="sub" style="margin:2px 0 6px;">Before code-gen, Claude searches the web (prior art, recommended stack, pitfalls) and drafts a cited research brief that grounds the product spec + architecture — mirroring the more thorough Claude desktop “project” flow. Adds one extra Claude turn per run.</p>
+    <textarea id="pipeResearchInstructions" style="min-height:140px;"></textarea>
+    <a class="link" id="pipeResearchReset" style="font-size:0.8rem; display:inline-block; margin-top:4px;">Reset research prompt to default</a>
+
     <label style="margin-top:12px;">MCP tools (optional) <span id="pipeMcpState" class="muted"></span></label>
     <p class="sub" style="margin:2px 0 6px;">Give Claude access to your MCP server's tools during the run. Leave the URL blank to disable. Enter the server URL (for the Dojo marketplace MCP that's <code>https://marketplace-poc-mcp.vpsdojo.com</code> — no path).</p>
     <input id="pipeMcpUrl" placeholder="https://your-mcp.example.com" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
@@ -1711,6 +1718,9 @@ async function loadPipelineConfig() {
     if (c.models.includes(c.model)) sel.value = c.model;
     else document.getElementById('pipeModelCustom').value = c.model;
     document.getElementById('pipeInstructions').value = c.instructions;
+    document.getElementById('pipeResearch').checked = c.research !== false;
+    document.getElementById('pipeResearchInstructions').value = c.researchInstructions || '';
+    window.__pipeResearchDefault = c.defaultResearchInstructions || '';
     document.getElementById('pipeMcpUrl').value = c.mcpUrl || '';
     document.getElementById('pipeMcpToken').value = '';
     document.getElementById('pipeMcpToken').placeholder = c.mcpHasToken
@@ -1745,6 +1755,8 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         instructions: document.getElementById('pipeInstructions').value,
+        research: document.getElementById('pipeResearch').checked,
+        researchInstructions: document.getElementById('pipeResearchInstructions').value,
         model,
         mcpUrl: document.getElementById('pipeMcpUrl').value,
         mcpToken: document.getElementById('pipeMcpToken').value,
@@ -1759,6 +1771,12 @@ document.getElementById('pipeReset').onclick = () => {
   if (window.__pipeDefault) {
     document.getElementById('pipeInstructions').value = window.__pipeDefault;
     document.getElementById('pipeSaveStatus').textContent = 'Reset to default — click Save to apply.';
+  }
+};
+document.getElementById('pipeResearchReset').onclick = () => {
+  if (window.__pipeResearchDefault) {
+    document.getElementById('pipeResearchInstructions').value = window.__pipeResearchDefault;
+    document.getElementById('pipeSaveStatus').textContent = 'Research prompt reset to default — click Save to apply.';
   }
 };
 document.getElementById('pipeDeployOnlyBtn').onclick = () => {

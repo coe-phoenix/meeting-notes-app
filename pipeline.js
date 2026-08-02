@@ -18,16 +18,43 @@ const DEFAULT_MODEL = 'claude-opus-5';
 const MAX_FILES = 40;
 const MAX_FILE_BYTES = 256 * 1024;
 
+// Research stage instructions (Stage 0). Runs BEFORE code-gen with Claude's
+// web_search server tool enabled, so the squad grounds the product spec +
+// architecture in real, current sources (existing solutions, recommended
+// libraries/APIs, common pitfalls) rather than the model's priors alone. This
+// mirrors the more thorough "project" flow in the Claude desktop app, which
+// researches the problem before drafting a design. Output is a concise, cited
+// research brief that is fed into the code-gen turn below. Editable in the UI.
+const RESEARCH_INSTRUCTIONS = `You are the product-research lead of an engineering squad. You are given meeting minutes describing a feature someone wants built. BEFORE any code is written, research the problem online so the team can draft a well-grounded product spec and architecture.
+
+Use the web_search tool (several focused searches) to investigate:
+- Existing products / open-source projects that already solve this or something close, and how they approach it.
+- The recommended, current libraries, SDKs, APIs, and frameworks for building it (note maturity, licensing, and whether they run in a lightweight Node.js server).
+- Established architecture patterns and reference designs for this class of feature.
+- Common pitfalls, failure modes, security/privacy concerns, and constraints to design around.
+
+Then write a concise, decision-ready RESEARCH BRIEF as readable Markdown (headings + short bullet lists), with these sections:
+### Research Brief
+- **Problem understanding** — one or two sentences restating the feature in your own words.
+- **Prior art** — the closest existing solutions and what to learn/borrow from each.
+- **Recommended stack** — the specific libraries/APIs/patterns you'd use for a minimal Node.js POC, with a one-line rationale each. Prefer light, standard dependencies.
+- **Key risks & pitfalls** — the top things that could make the POC fail or be unsafe, and how to avoid them.
+- **Sources** — a short bulleted list of the most useful URLs you actually found.
+
+Ground every claim in what you found — cite sources inline where it matters, and do not invent URLs. Keep it tight (a page or so). Output ONLY the research brief; do not write any code, product spec, or file manifest — a later stage does that using your brief.`;
+
 // Default pipeline instructions. This is the user's 5-phase "POC squad" flow with
 // the autonomous-deploy / secret-writing steps REMOVED — this feature generates
 // code and opens a PR for human review; it never deploys. Editable in the UI.
 const DEFAULT_INSTRUCTIONS = `You are an engineering squad that turns meeting minutes into a minimal, working Proof of Concept, delivered as code for review via a pull request.
 
+RESEARCH INPUT: The message may include a RESEARCH BRIEF produced by your product-research lead (web research on prior art, recommended stack, and pitfalls). When present, treat it as trusted input: let it drive your technology/library choices in the product spec and architecture, borrow from the prior art it cites, and design around the risks it flags. Do NOT re-do the research or paste the brief back verbatim — apply it.
+
 FORMAT: Write phases 1–4 below as normal, readable Markdown prose — real headings, paragraphs, and bullet lists with actual line breaks. Do NOT wrap this narrative in JSON or escape the newlines; a person reads it live as you type. Keep it concise.
 
-[1. Product Specs] — Extract the core requirement and the strict Acceptance Criteria (AC) from the minutes. If the minutes are thin, state your assumptions explicitly.
+[1. Product Specs] — Extract the core requirement and the strict Acceptance Criteria (AC) from the minutes. Fold in the relevant findings from the research brief (what comparable products do, what users expect). If the minutes are thin, state your assumptions explicitly and back them with the research.
 
-[2. Architecture Blueprint] — The smallest technical design that meets the AC. Forbid gold-plating: no features outside the AC.
+[2. Architecture Blueprint] — The smallest technical design that meets the AC, choosing the libraries/APIs and patterns recommended by the research brief. Forbid gold-plating: no features outside the AC.
 
 [3. Implementation] — Briefly describe the files you're creating and the key logic.
 
@@ -165,6 +192,7 @@ function parseManifest(text) {
 module.exports = {
   MODELS,
   DEFAULT_MODEL,
+  RESEARCH_INSTRUCTIONS,
   DEFAULT_INSTRUCTIONS,
   DEPLOY_INSTRUCTIONS,
   FIX_INSTRUCTIONS,

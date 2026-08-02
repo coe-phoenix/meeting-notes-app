@@ -1108,6 +1108,11 @@ app.get('/api/admin/pipeline/config', (req, res) => {
   res.json({
     instructions: jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS,
     defaultInstructions: pipeline.DEFAULT_INSTRUCTIONS,
+    // Stage 0 online research (Claude web_search). On by default; feeds a cited
+    // research brief into the spec/architecture code-gen turn.
+    research: jobs.getSetting('pipeline_research') !== '0',
+    researchInstructions: jobs.getSetting('pipeline_research_instructions') || pipeline.RESEARCH_INSTRUCTIONS,
+    defaultResearchInstructions: pipeline.RESEARCH_INSTRUCTIONS,
     model: jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL,
     models: pipeline.MODELS,
     githubReady: !!GITHUB_TOKEN,
@@ -1130,9 +1135,12 @@ app.get('/api/admin/pipeline/config', (req, res) => {
 });
 app.post('/api/admin/pipeline/config', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { instructions, model, mcpUrl, mcpToken } = req.body || {};
+  const { instructions, model, mcpUrl, mcpToken, research, researchInstructions } = req.body || {};
   if (typeof instructions === 'string') jobs.setSetting('pipeline_instructions', instructions);
   if (typeof model === 'string' && model.trim()) jobs.setSetting('pipeline_model', model.trim());
+  // Stage 0 online research toggle + editable prompt.
+  if (typeof research === 'boolean') jobs.setSetting('pipeline_research', research ? '1' : '0');
+  if (typeof researchInstructions === 'string') jobs.setSetting('pipeline_research_instructions', researchInstructions);
   // MCP URL saved as-is (empty string disables the connector). Token is only
   // updated when a new value is provided — blank leaves the stored one intact.
   if (typeof mcpUrl === 'string') jobs.setSetting('pipeline_mcp_url', mcpUrl.trim());
@@ -1502,6 +1510,9 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
   const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
   const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
+  // Stage 0 online research (Claude web_search): on unless explicitly disabled.
+  const researchEnabled = jobs.getSetting('pipeline_research') !== '0';
+  const researchInstructions = jobs.getSetting('pipeline_research_instructions') || pipeline.RESEARCH_INSTRUCTIONS;
   const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
   // Deploy runs automatically whenever an MCP is connected — code-gen → repo →
   // provision → git clone → pm2. Resolve the MCP bearer up front so a bad
@@ -1527,13 +1538,46 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
   let full = '';
   try {
+    // ---- Stage 0: online research (Claude web_search server tool). Grounds the
+    // product spec + architecture in real prior art / recommended stack / pitfalls
+    // before any code is written — mirroring the Claude desktop "project" flow.
+    // Streamed live, then folded into the Stage 1 code-gen message as a brief.
+    // Best-effort: if research fails (tool disabled, etc.) we fall back to
+    // straight code-gen so the pipeline never breaks. ----
+    let researchBrief = '';
+    if (researchEnabled) {
+      send('status', { message: 'Researching the problem online (prior art, stack, pitfalls)…' });
+      send('delta', { text: '## Stage 0 — Online research\n\n' });
+      try {
+        stream = anthropic.messages.stream({
+          model,
+          max_tokens: 8000,
+          system: researchInstructions,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }],
+          messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
+        });
+        stream.on('text', (delta) => { researchBrief += delta; send('delta', { text: delta }); });
+        await stream.finalMessage();
+        researchBrief = researchBrief.trim();
+      } catch (err) {
+        console.error('pipeline research stage failed:', err.message);
+        send('delta', { text: `\n_(Research step skipped: ${err.message})_\n` });
+        researchBrief = '';
+      }
+      if (aborted) return res.end();
+      send('delta', { text: '\n\n---\n\n' });
+    }
+
     // ---- Stage 1: generate the POC code (no tools → reliable file manifest). ----
     send('status', { message: `Running ${model} on the meeting minutes…` });
+    const codegenMessage = researchBrief
+      ? `Meeting minutes:\n\n${minutes}\n\n---\n\nRESEARCH BRIEF (from your product-research lead — apply it to the product spec and architecture below):\n\n${researchBrief}`
+      : `Meeting minutes:\n\n${minutes}`;
     stream = anthropic.messages.stream({
       model,
       max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
       system: instructions,
-      messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
+      messages: [{ role: 'user', content: codegenMessage }],
     });
     stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
     await stream.finalMessage();
