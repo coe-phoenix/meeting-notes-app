@@ -26,6 +26,11 @@ const sshOpts = (keyPath) => [
   '-o', 'UserKnownHostsFile=/dev/null',
   '-o', 'GlobalKnownHostsFile=/dev/null',
   '-o', 'ConnectTimeout=10',
+  // Keepalive: a long, silent remote step (e.g. apt) must not let an idle NAT/
+  // firewall drop the connection — send a probe every 15s, tolerate ~2min of no
+  // reply. Without this the deploy can die mid-install.
+  '-o', 'ServerAliveInterval=15',
+  '-o', 'ServerAliveCountMax=8',
   '-o', 'LogLevel=ERROR',
 ];
 

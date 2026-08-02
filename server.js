@@ -1289,15 +1289,21 @@ const DEPLOY_CFG = {
 // repo, and starts it under pm2. The API key is passed inline and never echoed
 // (no `set -x`). ${…} are JS interpolations; $(…)/$cid are literal shell.
 function deployScript({ cloneUrl, anthropicKey, port }) {
+  // NodeSource installs Node 20 with npm bundled and pulls only ~a dozen
+  // packages — far faster/quieter than Ubuntu's `npm` (which drags in webpack/
+  // babel/jest, ~5 min). Output is NOT suppressed: the steady stream both shows
+  // progress and keeps the SSH connection from idling out during install.
   return `set -e
 export DEBIAN_FRONTEND=noninteractive
-echo '[1/6] Freeing port ${port} (stop nginx)'
+echo '[1/6] Waiting for first-boot cloud-init, then freeing port ${port}'
+cloud-init status --wait >/dev/null 2>&1 || true
 systemctl stop nginx 2>/dev/null || true
 systemctl disable nginx 2>/dev/null || true
 for cid in $(docker ps --filter 'publish=${port}' -q 2>/dev/null); do docker stop "$cid" || true; done
-echo '[2/6] Installing Node.js, npm, git (this can take ~1–2 min)'
-apt-get update -y -qq >/dev/null
-apt-get install -y -qq nodejs npm git curl >/dev/null
+echo '[2/6] Installing Node.js 20 (NodeSource) + git'
+curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup.sh
+bash /tmp/nodesource_setup.sh
+apt-get -o DPkg::Lock::Timeout=300 install -y nodejs git
 echo "node $(node -v) / npm $(npm -v)"
 echo '[3/6] Cloning repo'
 rm -rf /opt/app
