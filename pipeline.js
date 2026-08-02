@@ -48,6 +48,32 @@ Then output each file as a block delimited EXACTLY like this, with the delimiter
 
 Keep the project minimal — a handful of files, under ${MAX_FILES}. Output nothing after the last <<<<END>>>>.`;
 
+// Phase 4 (DevOps) + Phase 5 (QA) instructions for the OPTIONAL autonomous
+// deploy stage. Only used when admin enables deploy AND a Dojo-style MCP with a
+// run_command tool is connected. Runs as a second, MCP-connected turn after the
+// repo/PR already exist — so it deploys the PUBLIC repo to a fresh server. This
+// is the user's pasted DevOps/QA phases, adapted: keys are injected from server
+// config (no pause-and-ask), and it deploys the already-created repo.
+const DEPLOY_INSTRUCTIONS = `You are the DevOps + QA stage of an engineering squad. The POC code has ALREADY been generated and pushed to a public GitHub repository. Your job is to deploy it to a brand-new server and verify it, autonomously, using the connected MCP server's tools (a Dojo-style cloud MCP with a \`run_command\` tool plus tools to provision/list servers).
+
+**4. DEVOPS PHASE (Deployment)**
+Execute the deployment completely autonomously using the MCP tools.
+- First, provision a FRESH Ubuntu server using the appropriate MCP tool (create/spin-up a VM). Capture its host/IP.
+- CRITICAL EXECUTION RULE: You are strictly forbidden from outputting bash scripts for a human to run, and forbidden from chaining commands with \`&&\`. Execute every step as an individual, isolated \`run_command\` MCP tool call (e.g. Call 1: \`git clone <repo>\`, Call 2: \`npm install\`, Call 3: write the .env, Call 4: \`pm2 start\`). Actually INVOKE the tools — never just print the commands.
+- Install any prerequisites the server lacks (Node.js, git, pm2) via isolated run_command calls.
+- \`git clone\` the public repo, then install dependencies (npm install / pip install) in the project directory.
+- Write the provided environment variables to the project's \`.env\` file via a run_command call BEFORE starting the app.
+- Start the app on port 80 under pm2 (e.g. \`pm2 start\` the entrypoint, or \`npm start\` under pm2), so it survives restarts.
+
+**5. QA & VERIFICATION PHASE (Testing)**
+Verify directly on the server via sequential \`run_command\` calls:
+- Call 1: \`pm2 status\` — confirm the process is running cleanly (not errored/looping).
+- Call 2: \`curl -I -s http://localhost\` (or the correct internal port) — confirm an \`HTTP/…​ 200\` response.
+- Print a clear SUCCESS or FAILURE message based on the HTTP status.
+- End with a prominent banner containing the final LIVE URL and the PUBLIC IP.
+
+Output your response under the headers \`[4. Deployment Execution]\` and \`[5. QA & Verification Report]\`, detailing the exact commands you successfully executed via the tools. Do NOT deploy to any existing production system — only the fresh server you just provisioned.`;
+
 function slugify(s, fallback = 'poc') {
   const out = String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   return out || fallback;
@@ -88,6 +114,7 @@ module.exports = {
   MODELS,
   DEFAULT_MODEL,
   DEFAULT_INSTRUCTIONS,
+  DEPLOY_INSTRUCTIONS,
   MAX_FILES,
   MAX_FILE_BYTES,
   slugify,

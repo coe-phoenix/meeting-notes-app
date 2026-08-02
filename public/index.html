@@ -306,6 +306,17 @@
     <input id="pipeMcpToken" type="password" placeholder="Static token (only if your MCP uses one; leave blank otherwise)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     <div class="status" id="pipeMcpStatus"></div>
 
+    <label style="margin-top:14px; display:flex; align-items:center; gap:8px; cursor:pointer;">
+      <input type="checkbox" id="pipeDeploy" style="width:18px; height:18px;" />
+      Autonomous deploy — after the PR, spin up a server via MCP and deploy (Phase 4/5)
+    </label>
+    <p class="sub" style="margin:2px 0 6px;">⚠ When on and an MCP is connected, Claude provisions a <b>fresh Ubuntu server</b> and runs shell commands on it via the MCP's <code>run_command</code> tool: git clone (repos are made <b>public</b> so the server can pull), npm install, write <code>.env</code> with this app's <code>ANTHROPIC_API_KEY</code>, start under pm2, then curl a health check. This actually mutates live infrastructure — use only against your own Dojo account.</p>
+    <div id="pipeDeployWrap" class="hidden">
+      <label style="margin-top:8px;">Deploy instructions (Phase 4/5, editable)</label>
+      <textarea id="pipeDeployInstructions" style="min-height:150px;"></textarea>
+      <a class="link" id="pipeDeployReset" style="font-size:0.8rem; display:inline-block; margin-top:4px;">Reset deploy instructions to default</a>
+    </div>
+
     <label style="margin-top:12px;">Instructions (editable)</label>
     <div id="pipeStaleWarn" class="hidden warn" style="font-size:0.85rem; margin:2px 0 6px;">⚠ These saved instructions are outdated — they don't use the current file format, so runs won't produce a repo. Click “Reset instructions to default”, then Save.</div>
     <textarea id="pipeInstructions" style="min-height:200px;"></textarea>
@@ -1608,6 +1619,10 @@ async function loadPipelineConfig() {
     document.getElementById('pipeMcpDisconnect').classList.toggle('hidden', !c.mcpConnected);
     document.getElementById('pipeMcpConnect').textContent = c.mcpConnected ? 'Reconnect' : 'Connect (sign in via browser)';
     if (!c.mcpCallbackReady) document.getElementById('pipeMcpStatus').textContent = 'Set APP_BASE_URL on the server to enable OAuth connect.';
+    document.getElementById('pipeDeploy').checked = !!c.deploy;
+    document.getElementById('pipeDeployWrap').classList.toggle('hidden', !c.deploy);
+    document.getElementById('pipeDeployInstructions').value = c.deployInstructions || '';
+    window.__pipeDeployDefault = c.defaultDeployInstructions || '';
     window.__pipeDefault = c.defaultInstructions || '';
     // Flag saved instructions that predate the current file-manifest format.
     const stale = !String(c.instructions || '').includes('<<<<FILE:');
@@ -1629,6 +1644,8 @@ document.getElementById('pipeSaveBtn').onclick = async () => {
         model,
         mcpUrl: document.getElementById('pipeMcpUrl').value,
         mcpToken: document.getElementById('pipeMcpToken').value,
+        deploy: document.getElementById('pipeDeploy').checked,
+        deployInstructions: document.getElementById('pipeDeployInstructions').value,
       }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
@@ -1640,6 +1657,15 @@ document.getElementById('pipeReset').onclick = () => {
   if (window.__pipeDefault) {
     document.getElementById('pipeInstructions').value = window.__pipeDefault;
     document.getElementById('pipeSaveStatus').textContent = 'Reset to default — click Save to apply.';
+  }
+};
+document.getElementById('pipeDeploy').onchange = (e) => {
+  document.getElementById('pipeDeployWrap').classList.toggle('hidden', !e.target.checked);
+};
+document.getElementById('pipeDeployReset').onclick = () => {
+  if (window.__pipeDeployDefault) {
+    document.getElementById('pipeDeployInstructions').value = window.__pipeDeployDefault;
+    document.getElementById('pipeSaveStatus').textContent = 'Deploy instructions reset — click Save to apply.';
   }
 };
 
@@ -1758,6 +1784,7 @@ document.getElementById('pipeRunBtn').onclick = () => {
     if (d.repo) html += `<div><strong>${escapeHtml(d.repo)}</strong>${d.files ? ` · ${d.files.length} file(s)` : ''}</div>`;
     if (d.prUrl) html += `<div style="margin-top:4px;">✓ <a class="link" href="${escapeHtml(d.prUrl)}" target="_blank" rel="noopener">View pull request →</a></div>`;
     else if (d.note) html += `<div style="margin-top:4px;">${escapeHtml(d.note)}</div>`;
+    if (d.deployed) html += `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed via MCP — see the log above for the live URL &amp; public IP.</div>`;
     if (d.files && d.files.length) html += `<div style="margin-top:6px; color:#9a9aa2; font-size:13px;">${d.files.map((f) => '📄 ' + escapeHtml(f)).join('<br>')}</div>`;
     result.innerHTML = html || 'Finished.';
     result.classList.remove('hidden');

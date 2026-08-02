@@ -35,14 +35,16 @@ async function resolveOwner(token, ownerEnv) {
   return { owner: me.login, isOrg: false };
 }
 
-// files: [{ path, content }]. Returns { repoUrl, prUrl }.
-async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody }) {
+// files: [{ path, content }]. Returns { repoUrl, prUrl, cloneUrl, branch }.
+// isPublic=true creates a public repo (so an unauthenticated `git clone` on a
+// deploy server works); default is private.
+async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody, isPublic = false }) {
   if (!token) throw new Error('GITHUB_TOKEN is not configured on the server');
   const { owner, isOrg } = await resolveOwner(token, ownerEnv);
 
-  // 1. Create the repo (private, with an initial commit so `main` exists).
+  // 1. Create the repo (with an initial commit so `main` exists).
   const repo = await gh(token, 'POST', isOrg ? `/orgs/${owner}/repos` : '/user/repos', {
-    name, private: true, auto_init: true,
+    name, private: !isPublic, auto_init: true,
     description: (prTitle || 'Meeting-notes POC').slice(0, 100),
   });
   const fullName = repo.full_name; // owner/name
@@ -75,7 +77,7 @@ async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody 
     body: (prBody || '') + '\n\n---\n_Generated from meeting minutes. Review before merging or deploying._',
   });
 
-  return { repoUrl: repo.html_url, prUrl: pr.html_url };
+  return { repoUrl: repo.html_url, prUrl: pr.html_url, cloneUrl: repo.clone_url, branch: base };
 }
 
 module.exports = { createRepoWithPR };

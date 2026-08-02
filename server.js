@@ -1117,6 +1117,10 @@ app.get('/api/admin/pipeline/config', (req, res) => {
     mcpConnected: !!jobs.getSetting('pipeline_mcp_refresh_token'),
     mcpScopes: jobs.getSetting('pipeline_mcp_scopes') || '',
     mcpCallbackReady: !!APP_BASE_URL,
+    // Optional autonomous deploy (Phase 4/5 via the MCP's run_command tool).
+    deploy: !!jobs.getSetting('pipeline_deploy'),
+    deployInstructions: jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS,
+    defaultDeployInstructions: pipeline.DEPLOY_INSTRUCTIONS,
   });
 });
 app.post('/api/admin/pipeline/config', (req, res) => {
@@ -1128,6 +1132,10 @@ app.post('/api/admin/pipeline/config', (req, res) => {
   // updated when a new value is provided — blank leaves the stored one intact.
   if (typeof mcpUrl === 'string') jobs.setSetting('pipeline_mcp_url', mcpUrl.trim());
   if (typeof mcpToken === 'string' && mcpToken.trim()) jobs.setSetting('pipeline_mcp_token', mcpToken.trim());
+  // Autonomous deploy toggle + editable Phase 4/5 instructions.
+  const { deploy, deployInstructions } = req.body || {};
+  if (typeof deploy === 'boolean') jobs.setSetting('pipeline_deploy', deploy ? '1' : '');
+  if (typeof deployInstructions === 'string') jobs.setSetting('pipeline_deploy_instructions', deployInstructions);
   res.json({ ok: true });
 });
 
@@ -1261,10 +1269,12 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
   const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
   const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
+  const deployEnabled = !!jobs.getSetting('pipeline_deploy');
   const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
-  // Resolve the MCP bearer (OAuth refresh → access token, or static fallback).
+  // The deploy stage (Phase 4/5) needs the MCP bearer; resolve it up front so a
+  // bad connection fails before we stream. Code-gen itself uses no tools.
   let mcpToken = '';
-  if (mcpUrl) {
+  if (deployEnabled && mcpUrl) {
     try { mcpToken = await mcpAccessToken(); }
     catch (err) { return res.status(502).json({ error: `MCP auth failed — reconnect in Admin → AI Pipeline. (${err.message})` }); }
   }
@@ -1282,49 +1292,18 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
   let aborted = false;
   req.on('close', () => { aborted = true; if (stream) { try { stream.abort(); } catch { /* ignore */ } } });
 
-  send('status', {
-    message: mcpUrl
-      ? `Running ${model} with the connected MCP tools…`
-      : `Running ${model} on the meeting minutes…`,
-  });
   let full = '';
   try {
-    if (mcpUrl) {
-      // MCP connector: Claude can call the configured MCP server's tools
-      // server-side while it works. Server-side tool use can pause the turn
-      // (10-iteration cap) — resume by re-streaming with the assistant reply
-      // appended, until the turn ends. mcp_tool_use blocks are surfaced live.
-      const mcpBase = {
-        model,
-        max_tokens: 32000,
-        betas: ['mcp-client-2025-11-20'],
-        system: instructions,
-        mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
-        tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
-      };
-      let convo = [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }];
-      for (let hop = 0; hop < 8 && !aborted; hop++) {
-        stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
-        stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
-        stream.on('streamEvent', (ev) => {
-          if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
-            send('status', { message: `Calling MCP tool “${ev.content_block.name}”…` });
-          }
-        });
-        const msg = await stream.finalMessage();
-        if (msg.stop_reason !== 'pause_turn') break;
-        convo = [...convo, { role: 'assistant', content: msg.content }];
-      }
-    } else {
-      stream = anthropic.messages.stream({
-        model,
-        max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
-        system: instructions,
-        messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
-      });
-      stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
-      await stream.finalMessage();
-    }
+    // ---- Stage 1: generate the POC code (no tools → reliable file manifest). ----
+    send('status', { message: `Running ${model} on the meeting minutes…` });
+    stream = anthropic.messages.stream({
+      model,
+      max_tokens: 32000, // headroom for multi-file POCs; truncation degrades gracefully
+      system: instructions,
+      messages: [{ role: 'user', content: `Meeting minutes:\n\n${minutes}` }],
+    });
+    stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
+    await stream.finalMessage();
 
     const manifest = pipeline.parseManifest(full);
     if (!manifest) { send('done', { prUrl: null, note: 'No file manifest was produced — showing the generated text only.' }); return res.end(); }
@@ -1334,13 +1313,59 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    send('status', { message: `Creating a private repo + PR with ${manifest.files.length} file(s)…` });
+    // ---- Stage 2: create the repo + PR. Public when we're about to deploy, so
+    // the fresh server can `git clone` it without credentials. ----
+    const willDeploy = deployEnabled && !!mcpToken && !!mcpUrl;
+    send('status', { message: `Creating a ${willDeploy ? 'public' : 'private'} repo + PR with ${manifest.files.length} file(s)…` });
     const name = `${manifest.repo}-${Date.now().toString(36)}`;
-    const { repoUrl, prUrl } = await github.createRepoWithPR({
+    const { repoUrl, prUrl, cloneUrl } = await github.createRepoWithPR({
       token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
-      prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary,
+      prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary, isPublic: willDeploy,
     });
-    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths });
+
+    if (!willDeploy) {
+      if (deployEnabled && !mcpToken) {
+        send('status', { message: 'Deploy is ON but no MCP is connected — skipping deploy. Connect the Dojo MCP in Admin → AI Pipeline.' });
+      }
+      send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths });
+      return res.end();
+    }
+
+    // ---- Stage 3: autonomous deploy + QA via the MCP's run_command tool. This
+    // is a fresh MCP-connected turn: Claude provisions a server, clones the
+    // public repo, writes .env (server's ANTHROPIC_API_KEY), starts pm2, and QAs.
+    // Server-side tool use can pause the turn (10 tool-call cap) — resume by
+    // re-streaming with the assistant reply appended, up to a hop ceiling. ----
+    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
+    full += '\n\n';
+    const deployInstructions = jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS;
+    const deployEnv = `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}\nPORT=80`;
+    const mcpBase = {
+      model,
+      max_tokens: 32000,
+      betas: ['mcp-client-2025-11-20'],
+      system: deployInstructions,
+      mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
+      tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
+    };
+    let convo = [{ role: 'user', content:
+      'The POC is generated and pushed to a PUBLIC GitHub repo. Deploy and verify it now, autonomously via the MCP tools.\n\n' +
+      `Repo: ${repoUrl}\nClone URL (public, no auth needed): ${cloneUrl}\nDefault branch: main\nSummary: ${manifest.summary}\n\n` +
+      `Write EXACTLY these environment variables into the project's .env file (via a run_command call) before starting the app:\n\n${deployEnv}\n\n` +
+      'Provision a fresh Ubuntu server, deploy the app on port 80 under pm2, then run the Phase 5 QA checks and print the live URL + public IP banner.' }];
+    for (let hop = 0; hop < 40 && !aborted; hop++) {
+      stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
+      stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
+      stream.on('streamEvent', (ev) => {
+        if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
+          send('status', { message: `MCP tool: ${ev.content_block.name}…` });
+        }
+      });
+      const msg = await stream.finalMessage();
+      if (msg.stop_reason !== 'pause_turn') break;
+      convo = [...convo, { role: 'assistant', content: msg.content }];
+    }
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });

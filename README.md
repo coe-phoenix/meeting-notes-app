@@ -215,9 +215,28 @@ automatically.
   State lives in the DB (`settings` keys `pipeline_mcp_*`); no token is ever echoed
   to the browser. Endpoints: `POST /api/admin/pipeline/mcp/connect`,
   `GET …/mcp/callback`, `POST …/mcp/disconnect`.
-- **Guardrails** (a transcript is untrusted input): admin-only; new **private**
-  repo per run; code behind a **PR** (no auto-merge); **no auto-deploy**; path
-  traversal/absolute paths rejected; ≤40 files, ≤256 KB each.
+- **Autonomous deploy** (Admin page → *AI Pipeline* → *Autonomous deploy*, optional,
+  **off by default**): when enabled **and** an MCP with a `run_command` tool is
+  connected, a run does a second stage after the PR — Claude provisions a **fresh
+  Ubuntu server** through the MCP and deploys the POC to it via individual isolated
+  `run_command` calls (Phase 4), then health-checks it with `pm2 status` +
+  `curl -I http://localhost` and prints a live-URL/public-IP banner (Phase 5).
+  Details:
+  - The repo is created **public** for deploy runs so the server can `git clone`/
+    `pull` it without credentials (private otherwise).
+  - The server's `.env` is written with this app's `ANTHROPIC_API_KEY` (+ `PORT=80`)
+    so a Claude-powered POC runs out of the box.
+  - Phase 4/5 instructions are editable (`settings` key `pipeline_deploy_instructions`,
+    default in `pipeline.js` as `DEPLOY_INSTRUCTIONS`); the toggle is
+    `pipeline_deploy`. Code-gen (stage 1) runs tool-free for a reliable manifest;
+    only the deploy stage is MCP-connected (agentic, `pause_turn` loop, ≤40 hops).
+  - **This mutates live infrastructure and writes a real API key onto a server** —
+    it is admin-only, behind the operator's own OAuth login and the Run click, and
+    intended only against your own cloud account.
+- **Guardrails** (a transcript is untrusted input): admin-only; a new repo per run;
+  code behind a **PR**; path traversal/absolute paths rejected; ≤40 files, ≤256 KB
+  each. Deploy is **opt-in** and never targets an existing production system — only
+  the fresh server it provisions.
 
 ## Endpoints
 
