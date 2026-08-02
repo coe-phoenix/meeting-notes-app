@@ -18,6 +18,7 @@ const cs = require('./cryptostore');
 const ratelimit = require('./ratelimit');
 const pipeline = require('./pipeline');
 const github = require('./github');
+const mcpoauth = require('./mcpoauth');
 
 const execFileP = promisify(execFile);
 
@@ -70,6 +71,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 // Admin AI-pipeline (generate a POC from meeting minutes → GitHub PR).
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_OWNER = process.env.GITHUB_OWNER || ''; // optional org/user; else the token's user
+const APP_BASE_URL = (process.env.APP_BASE_URL || '').replace(/\/$/, ''); // used for the MCP OAuth redirect
 
 // The UI masks providers as "Model 1" / "Model 2". Keep the mapping server-side.
 const MODEL_TO_PROVIDER = { model1: 'soniox', model2: 'gemini' };
@@ -1108,9 +1110,13 @@ app.get('/api/admin/pipeline/config', (req, res) => {
     models: pipeline.MODELS,
     githubReady: !!GITHUB_TOKEN,
     owner: GITHUB_OWNER || null,
-    // MCP connector: the URL is not secret; the token is never echoed back.
+    // MCP connector: the URL is not secret; tokens are never echoed back.
     mcpUrl: jobs.getSetting('pipeline_mcp_url') || '',
     mcpHasToken: !!jobs.getSetting('pipeline_mcp_token'),
+    // OAuth connection state (for the "Connect" button UI).
+    mcpConnected: !!jobs.getSetting('pipeline_mcp_refresh_token'),
+    mcpScopes: jobs.getSetting('pipeline_mcp_scopes') || '',
+    mcpCallbackReady: !!APP_BASE_URL,
   });
 });
 app.post('/api/admin/pipeline/config', (req, res) => {
@@ -1124,6 +1130,121 @@ app.post('/api/admin/pipeline/config', (req, res) => {
   if (typeof mcpToken === 'string' && mcpToken.trim()) jobs.setSetting('pipeline_mcp_token', mcpToken.trim());
   res.json({ ok: true });
 });
+
+// ----- MCP OAuth: browser-based connect (PKCE + dynamic client registration) -----
+// Some MCP servers (e.g. the Dojo marketplace MCP) are OAuth-protected with
+// short-lived access tokens. The Anthropic connector only sends a static bearer,
+// so we run the OAuth flow here, store the refresh token, and mint a fresh access
+// token before each run (see mcpAccessToken).
+const MCP_REDIRECT = () => `${APP_BASE_URL}/api/admin/pipeline/mcp/callback`;
+
+// Step 1: build the authorize URL the admin's browser is sent to.
+app.post('/api/admin/pipeline/mcp/connect', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!APP_BASE_URL) return res.status(500).json({ error: 'APP_BASE_URL is not configured on the server (needed for the OAuth redirect).' });
+  try {
+    const url = mcpoauth.normalizeUrl((req.body && req.body.url) || jobs.getSetting('pipeline_mcp_url') || '');
+    if (!url) return res.status(400).json({ error: 'Enter the MCP server URL first.' });
+    jobs.setSetting('pipeline_mcp_url', url);
+
+    const meta = await mcpoauth.discover(url);
+    const scope = meta.scopes.join(' ');
+    // Reuse a client already registered for this exact URL; else register one.
+    let clientId = jobs.getSetting('pipeline_mcp_client_id');
+    let clientSecret = jobs.getSetting('pipeline_mcp_client_secret') || '';
+    if (!clientId || jobs.getSetting('pipeline_mcp_registered_for') !== url) {
+      const reg = await mcpoauth.registerClient({ registration: meta.registration, redirectUri: MCP_REDIRECT(), scope });
+      clientId = reg.client_id; clientSecret = reg.client_secret || '';
+      jobs.setSetting('pipeline_mcp_client_id', clientId);
+      jobs.setSetting('pipeline_mcp_client_secret', clientSecret);
+      jobs.setSetting('pipeline_mcp_registered_for', url);
+    }
+
+    const { verifier, challenge } = mcpoauth.makePkce();
+    const state = mcpoauth.randomState();
+    jobs.setSetting('pipeline_mcp_pkce', verifier);
+    jobs.setSetting('pipeline_mcp_state', state);
+    jobs.setSetting('pipeline_mcp_token_endpoint', meta.token);
+    jobs.setSetting('pipeline_mcp_scopes', scope);
+
+    const authorizeUrl = mcpoauth.buildAuthorizeUrl({
+      authorize: meta.authorize, clientId, redirectUri: MCP_REDIRECT(),
+      challenge, state, scope, resource: url,
+    });
+    res.json({ authorizeUrl });
+  } catch (err) {
+    console.error('mcp connect failed:', err.message);
+    res.status(502).json({ error: `Could not start the MCP login: ${err.message}` });
+  }
+});
+
+// Step 2: OAuth redirect target — exchange the code, persist the refresh token.
+// Returns a tiny HTML page (this is a top-level browser navigation, not fetch).
+app.get('/api/admin/pipeline/mcp/callback', async (req, res) => {
+  const page = (ok, msg) => `<!doctype html><meta charset="utf-8"><title>MCP ${ok ? 'connected' : 'error'}</title>` +
+    `<body style="font-family:-apple-system,system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;text-align:center">` +
+    `<h2>${ok ? '✅ MCP connected' : '⚠️ Could not connect'}</h2><p style="color:#555">${msg}</p>` +
+    `<p><a href="/#/admin">Back to the admin page</a></p>` +
+    `<script>try{if(window.opener){window.opener.postMessage({mcp:'${ok ? 'connected' : 'error'}'},'*');setTimeout(()=>window.close(),1200);}}catch(e){}</script>`;
+  if (!auth.enabled || !req.user || !req.user.is_admin) return res.status(403).send(page(false, 'Admin sign-in required.'));
+  const { code, state, error, error_description } = req.query;
+  if (error) return res.status(400).send(page(false, `The MCP server returned: ${error_description || error}`));
+  if (!code || !state || state !== jobs.getSetting('pipeline_mcp_state')) {
+    return res.status(400).send(page(false, 'Invalid or expired login attempt — please try Connect again.'));
+  }
+  try {
+    const tok = await mcpoauth.exchangeCode({
+      token: jobs.getSetting('pipeline_mcp_token_endpoint'), code, redirectUri: MCP_REDIRECT(),
+      clientId: jobs.getSetting('pipeline_mcp_client_id'), clientSecret: jobs.getSetting('pipeline_mcp_client_secret') || '',
+      verifier: jobs.getSetting('pipeline_mcp_pkce'), resource: jobs.getSetting('pipeline_mcp_url'),
+    });
+    if (!tok.access_token) throw new Error('no access_token returned');
+    jobs.setSetting('pipeline_mcp_access_token', tok.access_token);
+    jobs.setSetting('pipeline_mcp_access_expiry', String(Date.now() + (Number(tok.expires_in) || 3600) * 1000));
+    if (tok.refresh_token) jobs.setSetting('pipeline_mcp_refresh_token', tok.refresh_token);
+    jobs.setSetting('pipeline_mcp_pkce', ''); jobs.setSetting('pipeline_mcp_state', '');
+    res.send(page(true, 'You can close this tab and run the AI pipeline.'));
+  } catch (err) {
+    console.error('mcp callback failed:', err.message);
+    res.status(502).send(page(false, `Token exchange failed: ${err.message}`));
+  }
+});
+
+// Disconnect: forget the stored OAuth credentials for this MCP.
+app.post('/api/admin/pipeline/mcp/disconnect', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  for (const k of ['pipeline_mcp_refresh_token', 'pipeline_mcp_access_token', 'pipeline_mcp_access_expiry',
+    'pipeline_mcp_client_id', 'pipeline_mcp_client_secret', 'pipeline_mcp_registered_for',
+    'pipeline_mcp_pkce', 'pipeline_mcp_state', 'pipeline_mcp_scopes', 'pipeline_mcp_token_endpoint']) {
+    jobs.setSetting(k, '');
+  }
+  res.json({ ok: true });
+});
+
+// Resolve the bearer token for the MCP connector at run time. Prefers OAuth: if a
+// refresh token is stored, return a cached access token that's still valid, else
+// refresh it (rotating the refresh token when the server issues a new one). Falls
+// back to the manually-pasted static token. Returns '' when nothing is configured.
+async function mcpAccessToken() {
+  const refreshToken = jobs.getSetting('pipeline_mcp_refresh_token');
+  if (refreshToken) {
+    const exp = Number(jobs.getSetting('pipeline_mcp_access_expiry') || 0);
+    const cached = jobs.getSetting('pipeline_mcp_access_token');
+    if (cached && exp - Date.now() > 60_000) return cached; // still valid (>60s headroom)
+    const tok = await mcpoauth.refresh({
+      token: jobs.getSetting('pipeline_mcp_token_endpoint'), refreshToken,
+      clientId: jobs.getSetting('pipeline_mcp_client_id'), clientSecret: jobs.getSetting('pipeline_mcp_client_secret') || '',
+      resource: jobs.getSetting('pipeline_mcp_url'),
+    });
+    if (tok.access_token) {
+      jobs.setSetting('pipeline_mcp_access_token', tok.access_token);
+      jobs.setSetting('pipeline_mcp_access_expiry', String(Date.now() + (Number(tok.expires_in) || 3600) * 1000));
+      if (tok.refresh_token) jobs.setSetting('pipeline_mcp_refresh_token', tok.refresh_token);
+      return tok.access_token;
+    }
+  }
+  return jobs.getSetting('pipeline_mcp_token') || '';
+}
 
 // Run the pipeline on a job's minutes and STREAM the phases live (SSE). On
 // completion, parse the file manifest and open a PR in a new private repo.
@@ -1141,7 +1262,12 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
   const instructions = jobs.getSetting('pipeline_instructions') || pipeline.DEFAULT_INSTRUCTIONS;
   const model = jobs.getSetting('pipeline_model') || pipeline.DEFAULT_MODEL;
   const mcpUrl = jobs.getSetting('pipeline_mcp_url') || '';
-  const mcpToken = jobs.getSetting('pipeline_mcp_token') || '';
+  // Resolve the MCP bearer (OAuth refresh → access token, or static fallback).
+  let mcpToken = '';
+  if (mcpUrl) {
+    try { mcpToken = await mcpAccessToken(); }
+    catch (err) { return res.status(502).json({ error: `MCP auth failed — reconnect in Admin → AI Pipeline. (${err.message})` }); }
+  }
 
   res.set({
     'Content-Type': 'text/event-stream',

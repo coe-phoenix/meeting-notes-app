@@ -296,9 +296,15 @@
       <input id="pipeModelCustom" placeholder="or custom id" style="flex:1; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     </div>
     <label style="margin-top:12px;">MCP tools (optional) <span id="pipeMcpState" class="muted"></span></label>
-    <p class="sub" style="margin:2px 0 6px;">Give Claude access to your MCP server's tools during the run. Leave the URL blank to disable. Use the MCP endpoint URL (often ends in <code>/mcp</code>), not the site root.</p>
-    <input id="pipeMcpUrl" placeholder="https://your-mcp.example.com/mcp" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
-    <input id="pipeMcpToken" type="password" placeholder="Authorization token (optional; leave blank to keep saved)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    <p class="sub" style="margin:2px 0 6px;">Give Claude access to your MCP server's tools during the run. Leave the URL blank to disable. Enter the server URL (for the Dojo marketplace MCP that's <code>https://marketplace-poc-mcp.vpsdojo.com</code> — no path).</p>
+    <input id="pipeMcpUrl" placeholder="https://your-mcp.example.com" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn-secondary" id="pipeMcpConnect">Connect (sign in via browser)</button>
+      <button class="btn-secondary hidden" id="pipeMcpDisconnect">Disconnect</button>
+    </div>
+    <p class="sub" style="margin:6px 0 0;">If your MCP needs a login (OAuth), click <b>Connect</b> — a Dojo sign-in window opens; approve it and the token is stored and auto-refreshed. Only use the token field below for servers that hand out a plain static token.</p>
+    <input id="pipeMcpToken" type="password" placeholder="Static token (only if your MCP uses one; leave blank otherwise)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+    <div class="status" id="pipeMcpStatus"></div>
 
     <label style="margin-top:12px;">Instructions (editable)</label>
     <div id="pipeStaleWarn" class="hidden warn" style="font-size:0.85rem; margin:2px 0 6px;">⚠ These saved instructions are outdated — they don't use the current file format, so runs won't produce a repo. Click “Reset instructions to default”, then Save.</div>
@@ -1591,9 +1597,17 @@ async function loadPipelineConfig() {
     document.getElementById('pipeMcpUrl').value = c.mcpUrl || '';
     document.getElementById('pipeMcpToken').value = '';
     document.getElementById('pipeMcpToken').placeholder = c.mcpHasToken
-      ? 'Token saved — leave blank to keep, or type a new one'
-      : 'Authorization token (optional)';
-    document.getElementById('pipeMcpState').textContent = c.mcpUrl ? '· connected' : '· not set';
+      ? 'Static token saved — leave blank to keep, or type a new one'
+      : 'Static token (only if your MCP uses one; leave blank otherwise)';
+    // Connection state: OAuth-connected > static token > URL set > not set.
+    const st = document.getElementById('pipeMcpState');
+    if (c.mcpConnected) st.innerHTML = '· <span style="color:#4caf50">signed in via OAuth</span>' + (c.mcpScopes ? ' (' + escapeHtml(c.mcpScopes) + ')' : '');
+    else if (c.mcpHasToken) st.textContent = '· static token set';
+    else if (c.mcpUrl) st.textContent = '· URL set — click Connect to sign in';
+    else st.textContent = '· not set';
+    document.getElementById('pipeMcpDisconnect').classList.toggle('hidden', !c.mcpConnected);
+    document.getElementById('pipeMcpConnect').textContent = c.mcpConnected ? 'Reconnect' : 'Connect (sign in via browser)';
+    if (!c.mcpCallbackReady) document.getElementById('pipeMcpStatus').textContent = 'Set APP_BASE_URL on the server to enable OAuth connect.';
     window.__pipeDefault = c.defaultInstructions || '';
     // Flag saved instructions that predate the current file-manifest format.
     const stale = !String(c.instructions || '').includes('<<<<FILE:');
@@ -1627,6 +1641,41 @@ document.getElementById('pipeReset').onclick = () => {
     document.getElementById('pipeInstructions').value = window.__pipeDefault;
     document.getElementById('pipeSaveStatus').textContent = 'Reset to default — click Save to apply.';
   }
+};
+
+// MCP OAuth connect: open the sign-in popup, refresh state when it reports back.
+document.getElementById('pipeMcpConnect').onclick = async () => {
+  const s = document.getElementById('pipeMcpStatus');
+  s.textContent = 'Starting sign-in…';
+  try {
+    const res = await fetch('/api/admin/pipeline/mcp/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: document.getElementById('pipeMcpUrl').value }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || 'Could not start MCP login');
+    const w = window.open(j.authorizeUrl, 'mcp_oauth', 'width=520,height=680');
+    if (!w) { s.textContent = 'Popup blocked — allow popups, or open: ' + j.authorizeUrl; return; }
+    s.textContent = 'Waiting for you to approve in the sign-in window…';
+    const onMsg = (ev) => {
+      if (!ev.data || (ev.data.mcp !== 'connected' && ev.data.mcp !== 'error')) return;
+      window.removeEventListener('message', onMsg);
+      s.textContent = ev.data.mcp === 'connected' ? 'Connected ✓' : 'Sign-in failed — see the popup.';
+      loadPipelineConfig();
+    };
+    window.addEventListener('message', onMsg);
+  } catch (e) { s.textContent = 'Error: ' + e.message; }
+};
+document.getElementById('pipeMcpDisconnect').onclick = async () => {
+  const s = document.getElementById('pipeMcpStatus');
+  if (!confirm('Disconnect this MCP? You will need to sign in again to use its tools.')) return;
+  s.textContent = 'Disconnecting…';
+  try {
+    const res = await fetch('/api/admin/pipeline/mcp/disconnect', { method: 'POST' });
+    if (!res.ok) throw new Error('Disconnect failed');
+    s.textContent = 'Disconnected.';
+    loadPipelineConfig();
+  } catch (e) { s.textContent = 'Error: ' + e.message; }
 };
 
 // Tiny Markdown renderer for the pipeline's human-readable phases (headings,

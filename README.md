@@ -199,13 +199,22 @@ automatically.
   Set `GITHUB_TOKEN` (repo scope) and optionally `GITHUB_OWNER`. Without a token,
   it still streams the code but skips the repo.
 - **MCP tools** (Admin page → *AI Pipeline* → *MCP tools*, optional): point the run
-  at an MCP server (e.g. an internal marketplace MCP) so Claude can call its tools
-  while generating the POC. Enter the **endpoint URL** (the Streamable-HTTP path,
-  often ending in `/mcp` — not the site root) and an optional bearer token; both are
-  stored in the DB (`settings` keys `pipeline_mcp_url` / `pipeline_mcp_token`, token
-  never echoed back) and changeable without a redeploy. Uses the Anthropic MCP
-  connector (`anthropic.beta.messages.stream`, beta `mcp-client-2025-11-20`);
+  at an MCP server (e.g. the Dojo marketplace MCP) so Claude can call its tools while
+  generating the POC. Enter the **server URL** (the MCP root, e.g.
+  `https://marketplace-poc-mcp.vpsdojo.com` — not a `/mcp` sub-path) and connect:
+  - **OAuth-protected servers** (browser login): click **Connect** — the app does the
+    OAuth 2.1 + PKCE dance for you (`mcpoauth.js`): dynamic client registration, a
+    sign-in popup on the MCP's own domain, code exchange, and it stores the **refresh
+    token**. Before each run it mints a fresh short-lived access token (auto-refresh,
+    rotating the refresh token when the server issues a new one). Needs `APP_BASE_URL`
+    set (the OAuth redirect target is `${APP_BASE_URL}/api/admin/pipeline/mcp/callback`).
+  - **Static-token servers**: paste a bearer token in the token field instead.
+
+  The connector uses `anthropic.beta.messages.stream` (beta `mcp-client-2025-11-20`);
   `pause_turn` tool loops are resumed automatically and live tool calls are shown.
+  State lives in the DB (`settings` keys `pipeline_mcp_*`); no token is ever echoed
+  to the browser. Endpoints: `POST /api/admin/pipeline/mcp/connect`,
+  `GET …/mcp/callback`, `POST …/mcp/disconnect`.
 - **Guardrails** (a transcript is untrusted input): admin-only; new **private**
   repo per run; code behind a **PR** (no auto-merge); **no auto-deploy**; path
   traversal/absolute paths rejected; ≤40 files, ≤256 KB each.
