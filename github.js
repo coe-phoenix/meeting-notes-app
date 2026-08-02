@@ -70,14 +70,11 @@ async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody,
     message: 'Add generated POC from meeting minutes', tree: newTree.sha, parents: [baseSha],
   });
 
-  // 4. New branch `poc` at that commit, then a PR into the default branch.
-  await gh(token, 'POST', `/repos/${fullName}/git/refs`, { ref: 'refs/heads/poc', sha: commit.sha });
-  const pr = await gh(token, 'POST', `/repos/${fullName}/pulls`, {
-    title: prTitle || 'Generated POC', head: 'poc', base,
-    body: (prBody || '') + '\n\n---\n_Generated from meeting minutes. Review before merging or deploying._',
-  });
+  // 4. Land the generated files directly on the default branch (main), so a
+  // plain `git clone` gets the code — no `poc` branch, no PR to check out.
+  await gh(token, 'PATCH', `/repos/${fullName}/git/refs/heads/${base}`, { sha: commit.sha, force: true });
 
-  return { repoUrl: repo.html_url, prUrl: pr.html_url, cloneUrl: repo.clone_url, branch: base };
+  return { repoUrl: repo.html_url, prUrl: null, cloneUrl: repo.clone_url, branch: base };
 }
 
 // Best-effort: make an existing repo public so a server can clone it without

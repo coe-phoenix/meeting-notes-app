@@ -1318,12 +1318,21 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
   const call = (name, args) => mcpclient.callTool(mcpUrl, mcpToken, name, args).then(mcpResultObj);
   const log = (t) => send('delta', { text: t });
 
-  // 1. Provision.
-  send('status', { message: 'Provisioning Amazon Lightsail (1 GB, Singapore)…' });
+  // 1. Provision. The server name matches the GitHub repo/service we're
+  // deploying (derived from the clone URL) so the Dojo box is identifiable and
+  // maps 1:1 to the PR. Param names + metadata match the Dojo create_server API.
+  const serverName = (String(cloneUrl).match(/([^/]+?)(?:\.git)?$/) || [])[1]
+    || `notetaker-poc-${Date.now().toString(36)}`;
+  send('status', { message: `Provisioning Amazon Lightsail (1 GB, Singapore) as “${serverName}”…` });
   const created = await call('create_server', {
-    cloud_provider_id: c.cloud_provider_id, region_id: c.region_id,
-    cloud_service_plan_id: c.cloud_service_plan_id, support_level_id: c.support_level_id,
-    project_id: c.project_id, name: `notetaker-poc-${Date.now().toString(36)}`, admin_email: c.admin_email,
+    project_id: c.project_id,
+    cloud_provider_id: c.cloud_provider_id,
+    cloud_region_id: c.region_id,
+    service_plan_id: c.cloud_service_plan_id,
+    support_level_id: c.support_level_id,
+    name: serverName,
+    admin_email: c.admin_email,
+    metadata_json: { os: 'ubuntu24.04', webserver: 'nginx+docker' },
   });
   const serverId = deepFind(created, 'server_id') ?? deepFind(created, 'id');
   let vmId = deepFind(created, 'vm_id');
@@ -1383,20 +1392,38 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted }) {
       }
     }
   };
-  send('status', { message: 'Agent reachable — deploying…' });
-  await run(`git clone ${cloneUrl} /opt/app`, { retryMs: 5 * 60 * 1000 });
+  // Preflight (also waits for the agent): is Node/npm even present? Dojo's stock
+  // Lightsail image ships nginx+docker but NO Node, and run_command cannot install
+  // it (apt-get and `docker run` are both blocked by the allowlist). Fail loudly
+  // here rather than emitting a fake "live URL" for an app that never started.
+  send('status', { message: 'Checking the server for Node.js…' });
+  const npmv = await run('npm -v', { retryMs: 5 * 60 * 1000 });
+  if (npmv.ec !== 0) {
+    log('\n========================================\n❌ DEPLOY BLOCKED — Node.js is not installed on this server.\n' +
+      "Dojo's stock image has no Node/npm, and run_command's allowlist can't install it\n" +
+      '(apt-get and `docker run` are both rejected). A generated Node POC cannot be\n' +
+      'started here via run_command. Options: (1) a Dojo image/plan with Node preinstalled,\n' +
+      '(2) an SSH-based deploy (add_ssh_key + ssh from this app, like the manual playbook),\n' +
+      "or (3) have Dojo widen the run_command allowlist. The server IP is below if you\n" +
+      'want to finish by hand.\n' +
+      `PUBLIC IP: ${publicIp}\n========================================\n`);
+    return { publicIp, ok: false, blocked: true, liveUrl: null };
+  }
+
+  send('status', { message: 'Node found — deploying…' });
+  await run(`git clone ${cloneUrl} /opt/app`);
   await run('npm install --prefix /opt/app --omit=dev');
   await run('npm install -g pm2');
   await run(`ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} PORT=${c.app_port} pm2 start npm --name app --cwd /opt/app -- start`);
   await run('pm2 save');
 
-  // 5. QA.
+  // 5. QA — only a real HTTP 200 counts as deployed.
   await run('pm2 status');
   const health = await run(`curl -I -s http://localhost:${c.app_port}`);
   const ok = /HTTP\/\d(?:\.\d)?\s+200/.test(`${health.stdout} ${health.stderr}`);
-  const liveUrl = `http://${publicIp}:${c.app_port}`;
-  send('status', { message: ok ? '✅ Health check returned 200.' : '⚠️ Health check did not return 200 — see the log.' });
-  log(`\n========================================\n${ok ? '✅ DEPLOYED' : '⚠️ DEPLOY FINISHED (health ≠ 200)'}\nLIVE URL:  ${liveUrl}\nPUBLIC IP: ${publicIp}\n========================================\n`);
+  const liveUrl = ok ? `http://${publicIp}:${c.app_port}` : null;
+  send('status', { message: ok ? '✅ Health check returned 200.' : '❌ App did not return 200 — deploy failed.' });
+  log(`\n========================================\n${ok ? `✅ DEPLOYED\nLIVE URL:  ${liveUrl}` : '❌ DEPLOY FAILED (no HTTP 200 from the app)'}\nPUBLIC IP: ${publicIp}\n========================================\n`);
   return { publicIp, ok, liveUrl };
 }
 
@@ -1482,7 +1509,7 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
 
     // ---- Stage 3: deterministic deploy + QA (provision/poll done in Node). ----
     const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
-    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true, liveUrl: (dep && dep.liveUrl) || null });
+    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: !!(dep && dep.ok), liveUrl: (dep && dep.liveUrl) || null, deployNote: dep && !dep.ok ? 'Deploy did not succeed — see the log above.' : null });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });
@@ -1527,7 +1554,7 @@ app.get('/api/admin/pipeline/deploy-stream', async (req, res) => {
     if (GITHUB_TOKEN) await github.setRepoPublic(GITHUB_TOKEN, repoUrl);
 
     const dep = await runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted: () => aborted });
-    send('done', { repoUrl, deployed: true, liveUrl: (dep && dep.liveUrl) || null });
+    send('done', { repoUrl, deployed: !!(dep && dep.ok), liveUrl: (dep && dep.liveUrl) || null, deployNote: dep && !dep.ok ? 'Deploy did not succeed — see the log above.' : null });
   } catch (err) {
     console.error('deploy stream failed:', err.message);
     send('error', { error: err.message });

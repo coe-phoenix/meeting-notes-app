@@ -1697,9 +1697,8 @@ document.getElementById('pipeDeployOnlyBtn').onclick = () => {
   es.addEventListener('done', (e) => {
     finished = true;
     const d = JSON.parse(e.data);
-    status.innerHTML = d.liveUrl
-      ? `🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a>`
-      : (d.deployed ? '🚀 Deploy finished — see the log above for the live URL & public IP.' : 'Done.');
+    if (d.liveUrl) status.innerHTML = `🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a>`;
+    else status.innerHTML = `<span class="warn">❌ ${escapeHtml(d.deployNote || 'Deploy did not succeed — see the log above.')}</span>`;
     es.close(); btn.disabled = false;
   });
   es.addEventListener('error', (e) => {
@@ -1839,9 +1838,8 @@ document.getElementById('pipeRunBtn').onclick = () => {
     if (d.repo) html += `<div><strong>${escapeHtml(d.repo)}</strong>${d.files ? ` · ${d.files.length} file(s)` : ''}</div>`;
     if (d.prUrl) html += `<div style="margin-top:4px;">✓ <a class="link" href="${escapeHtml(d.prUrl)}" target="_blank" rel="noopener">View pull request →</a></div>`;
     else if (d.note) html += `<div style="margin-top:4px;">${escapeHtml(d.note)}</div>`;
-    if (d.deployed) html += d.liveUrl
-      ? `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a></div>`
-      : `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed via MCP — see the log above for the live URL &amp; public IP.</div>`;
+    if (d.deployed && d.liveUrl) html += `<div style="margin-top:4px; color:#4caf50;">🚀 Deployed — <a class="link" href="${escapeHtml(d.liveUrl)}" target="_blank" rel="noopener">${escapeHtml(d.liveUrl)}</a></div>`;
+    else if (d.deployNote) html += `<div style="margin-top:4px;" class="warn">❌ ${escapeHtml(d.deployNote)}</div>`;
     if (d.files && d.files.length) html += `<div style="margin-top:6px; color:#9a9aa2; font-size:13px;">${d.files.map((f) => '📄 ' + escapeHtml(f)).join('<br>')}</div>`;
     result.innerHTML = html || 'Finished.';
     result.classList.remove('hidden');
