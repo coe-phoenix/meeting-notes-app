@@ -1327,7 +1327,7 @@ sleep 5
 echo '[6/6] QA'
 pm2 status
 echo '--- health check ---'
-curl -I -s -m 10 http://localhost:${port} || echo 'curl failed'
+curl -s -o /dev/null -m 10 -w 'HEALTHCHECK_HTTP_CODE=%{http_code}\n' http://localhost:${port} || echo 'curl failed'
 echo '=== DEPLOY DONE ==='
 `;
 }
@@ -1348,7 +1348,7 @@ pm2 save 2>/dev/null || true
 sleep 5
 pm2 status
 echo '--- health check ---'
-curl -I -s -m 10 http://localhost:${port} || echo 'curl failed'
+curl -s -o /dev/null -m 10 -w 'HEALTHCHECK_HTTP_CODE=%{http_code}\n' http://localhost:${port} || echo 'curl failed'
 echo '=== DEPLOY DONE ==='
 `;
 }
@@ -1477,7 +1477,8 @@ async function runMcpDeploy({ mcpUrl, mcpToken, cloneUrl, send, isAborted, onHea
         ? deployScript({ cloneUrl, anthropicKey: ANTHROPIC_API_KEY, port: c.app_port })
         : redeployScript({ anthropicKey: ANTHROPIC_API_KEY, port: c.app_port });
       const { output } = await runScript(script);
-      ok = /HTTP\/\d(?:\.\d)?\s+200/.test(output);
+      // Success = a GET on / returned 200 (mirrors the real user, not a HEAD).
+      ok = /HEALTHCHECK_HTTP_CODE=200\b/.test(output);
       if (ok || attempt === maxAttempts || !onHeal || isAborted()) break;
 
       send('status', { message: `Health check failed — collecting logs and asking Claude to fix (attempt ${attempt}/${maxAttempts - 1})…` });

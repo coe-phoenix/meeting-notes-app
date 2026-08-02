@@ -124,7 +124,7 @@ Step 4.3 — Deploy via run_command. CRITICAL run_command rules: every call runs
 **5. QA & VERIFICATION PHASE (Testing)**
 Via run_command (vm_id):
 - \`pm2 status\` — confirm the app process is "online", not errored/looping.
-- \`curl -I -s http://localhost\` — confirm an \`HTTP/… 200\` response.
+- \`curl -s -o /dev/null -w '%{http_code}' http://localhost\` — a GET on / (like a real user, NOT a HEAD/\`-I\`) must return \`200\`.
 - Print a clear SUCCESS or FAILURE line based on the HTTP status.
 - End with a prominent banner containing the LIVE URL (http://<public_ip>) and the PUBLIC IP.
 

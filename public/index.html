@@ -337,7 +337,7 @@
           <li>poll <code>get_server</code> until a public IP is assigned</li>
           <li><code>add_firewall_rule</code> to open tcp/3000 (nginx already owns :80)</li>
           <li><code>git clone</code> the public repo → <code>npm install</code> → <code>pm2 start npm -- start</code> (port 3000, <code>ANTHROPIC_API_KEY</code> inline; first command retries until the agent answers)</li>
-          <li>QA: <code>pm2 status</code> + <code>curl -I http://localhost:3000</code> → live-URL banner</li>
+          <li>QA: <code>pm2 status</code> + a GET <code>curl</code> on <code>http://localhost</code> (must return 200) → live-URL banner</li>
         </ol>
       </div>
 
