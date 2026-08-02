@@ -19,6 +19,7 @@ const ratelimit = require('./ratelimit');
 const pipeline = require('./pipeline');
 const github = require('./github');
 const mcpoauth = require('./mcpoauth');
+const mcpclient = require('./mcpclient');
 
 const execFileP = promisify(execFile);
 
@@ -1229,6 +1230,23 @@ app.post('/api/admin/pipeline/mcp/disconnect', (req, res) => {
   res.json({ ok: true });
 });
 
+// Introspect the connected MCP: list its tools + input schemas. Read-only. Used
+// to see what the server (e.g. Dojo) actually exposes — e.g. create_server /
+// add_ssh_key params for the SSH deploy model.
+app.get('/api/admin/pipeline/mcp/tools', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const url = jobs.getSetting('pipeline_mcp_url') || '';
+  if (!url) return res.status(400).json({ error: 'Set the MCP URL first.' });
+  try {
+    const token = await mcpAccessToken();
+    const tools = await mcpclient.listTools(url, token);
+    res.json({ count: tools.length, tools: tools.map((t) => ({ name: t.name, description: t.description || '', inputSchema: t.inputSchema || t.input_schema || null })) });
+  } catch (err) {
+    console.error('mcp tools/list failed:', err.message);
+    res.status(502).json({ error: `Could not list MCP tools: ${err.message}` });
+  }
+});
+
 // Resolve the bearer token for the MCP connector at run time. Prefers OAuth: if a
 // refresh token is stored, return a cached access token that's still valid, else
 // refresh it (rotating the refresh token when the server issues a new one). Falls
@@ -1331,41 +1349,18 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    // ---- Stage 3: autonomous deploy + QA via the MCP's run_command tool. This
-    // is a fresh MCP-connected turn: Claude provisions a server, clones the
-    // public repo, writes .env (server's ANTHROPIC_API_KEY), starts pm2, and QAs.
-    // Server-side tool use can pause the turn (10 tool-call cap) — resume by
-    // re-streaming with the assistant reply appended, up to a hop ceiling. ----
-    send('status', { message: 'Handing off to the MCP to provision a server and deploy…' });
-    full += '\n\n';
-    const deployInstructions = jobs.getSetting('pipeline_deploy_instructions') || pipeline.DEPLOY_INSTRUCTIONS;
-    const deployEnv = `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}\nPORT=80`;
-    const mcpBase = {
-      model,
-      max_tokens: 32000,
-      betas: ['mcp-client-2025-11-20'],
-      system: deployInstructions,
-      mcp_servers: [{ type: 'url', name: 'marketplace', url: mcpUrl, ...(mcpToken ? { authorization_token: mcpToken } : {}) }],
-      tools: [{ type: 'mcp_toolset', mcp_server_name: 'marketplace' }],
-    };
-    let convo = [{ role: 'user', content:
-      'The POC is generated and pushed to a PUBLIC GitHub repo. Deploy and verify it now, autonomously via the MCP tools.\n\n' +
-      `Repo: ${repoUrl}\nClone URL (public, no auth needed): ${cloneUrl}\nDefault branch: main\nSummary: ${manifest.summary}\n\n` +
-      `Write EXACTLY these environment variables into the project's .env file (via a run_command call) before starting the app:\n\n${deployEnv}\n\n` +
-      'Provision a fresh Ubuntu server, deploy the app on port 80 under pm2, then run the Phase 5 QA checks and print the live URL + public IP banner.' }];
-    for (let hop = 0; hop < 40 && !aborted; hop++) {
-      stream = anthropic.beta.messages.stream({ ...mcpBase, messages: convo });
-      stream.on('text', (delta) => { full += delta; send('delta', { text: delta }); });
-      stream.on('streamEvent', (ev) => {
-        if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'mcp_tool_use') {
-          send('status', { message: `MCP tool: ${ev.content_block.name}…` });
-        }
-      });
-      const msg = await stream.finalMessage();
-      if (msg.stop_reason !== 'pause_turn') break;
-      convo = [...convo, { role: 'assistant', content: msg.content }];
-    }
-    send('done', { prUrl, repoUrl, repo: manifest.repo, files: filePaths, deployed: true });
+    // ---- Stage 3: autonomous deploy (SSH model — being finalized). The Dojo MCP
+    // has NO run_command/shell tool, so deploy is: provision a server + register
+    // an SSH key via the MCP's own tools (create_server / add_ssh_key), then SSH
+    // in from this app to run git clone / npm / pm2. Wiring the exact tool params
+    // requires the MCP's tool schemas (Admin → AI Pipeline → Inspect MCP tools).
+    // Until that's wired, we finish at the PR and say so rather than run a flow
+    // that assumes a tool that doesn't exist. ----
+    send('status', { message: 'PR created. SSH-based deploy is being finalized for Dojo — see the note below.' });
+    send('done', {
+      prUrl, repoUrl, repo: manifest.repo, files: filePaths,
+      note: 'Deploy is ON, but Dojo MCP has no run_command tool — the SSH-based deploy step is still being wired to your create_server/add_ssh_key tools. Use “Inspect MCP tools” in Admin so this can be finalized.',
+    });
   } catch (err) {
     console.error('pipeline stream failed:', err.message);
     send('error', { error: err.message });

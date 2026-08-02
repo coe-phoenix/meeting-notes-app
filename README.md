@@ -215,28 +215,24 @@ automatically.
   State lives in the DB (`settings` keys `pipeline_mcp_*`); no token is ever echoed
   to the browser. Endpoints: `POST /api/admin/pipeline/mcp/connect`,
   `GET …/mcp/callback`, `POST …/mcp/disconnect`.
+- **Inspect MCP tools** (Admin page → *AI Pipeline* → *Inspect MCP tools*): calls the
+  connected MCP's `tools/list` (via `mcpclient.js`, using the OAuth token) and shows
+  each tool + input schema. Read-only; used to see what the server actually exposes.
 - **Autonomous deploy** (Admin page → *AI Pipeline* → *Autonomous deploy*, optional,
-  **off by default**): when enabled **and** an MCP with a `run_command` tool is
-  connected, a run does a second stage after the PR — Claude provisions a **fresh
-  Ubuntu server** through the MCP and deploys the POC to it via individual isolated
-  `run_command` calls (Phase 4), then health-checks it with `pm2 status` +
-  `curl -I http://localhost` and prints a live-URL/public-IP banner (Phase 5).
-  Details:
-  - The repo is created **public** for deploy runs so the server can `git clone`/
-    `pull` it without credentials (private otherwise).
-  - The server's `.env` is written with this app's `ANTHROPIC_API_KEY` (+ `PORT=80`)
-    so a Claude-powered POC runs out of the box.
-  - Phase 4/5 instructions are editable (`settings` key `pipeline_deploy_instructions`,
-    default in `pipeline.js` as `DEPLOY_INSTRUCTIONS`); the toggle is
-    `pipeline_deploy`. Code-gen (stage 1) runs tool-free for a reliable manifest;
-    only the deploy stage is MCP-connected (agentic, `pause_turn` loop, ≤40 hops).
-  - **This mutates live infrastructure and writes a real API key onto a server** —
-    it is admin-only, behind the operator's own OAuth login and the Run click, and
-    intended only against your own cloud account.
+  **off by default**, **being finalized**): the Dojo MCP exposes **no shell /
+  `run_command` tool** — its 62 tools are platform management (`create_server`,
+  `deploy_service`, `update_docker_compose`, `add_ssh_key`, `vm_action`, firewall,
+  monitoring, …). So deploy is the **provision-then-SSH** model: use the MCP's own
+  `create_server` + `add_ssh_key` to bring up a server and register a key, then SSH
+  in **from this app** to run `git clone` / `npm install` / write `.env` (this app's
+  `ANTHROPIC_API_KEY`) / `pm2 start`, and QA with `pm2 status` + `curl`. The repo is
+  created **public** for deploy runs so the server can `git clone` it. Wiring the
+  exact `create_server`/`add_ssh_key` parameters needs the MCP's tool schemas (use
+  *Inspect MCP tools*); until then a deploy-enabled run finishes at the PR with a
+  note. Toggle `pipeline_deploy`; editable notes `pipeline_deploy_instructions`.
 - **Guardrails** (a transcript is untrusted input): admin-only; a new repo per run;
   code behind a **PR**; path traversal/absolute paths rejected; ≤40 files, ≤256 KB
-  each. Deploy is **opt-in** and never targets an existing production system — only
-  the fresh server it provisions.
+  each. Deploy is **opt-in** and only ever targets a server it provisions.
 
 ## Endpoints
 

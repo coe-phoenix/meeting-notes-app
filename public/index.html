@@ -301,7 +301,9 @@
     <div class="btn-row" style="margin-top:8px;">
       <button class="btn-secondary" id="pipeMcpConnect">Connect (sign in via browser)</button>
       <button class="btn-secondary hidden" id="pipeMcpDisconnect">Disconnect</button>
+      <button class="btn-secondary" id="pipeMcpInspect">Inspect MCP tools</button>
     </div>
+    <pre id="pipeMcpTools" class="hidden" style="max-height:240px; overflow:auto; background:#0f1115; border:1px solid #2a2e37; border-radius:8px; padding:10px; font-size:12px; white-space:pre-wrap; margin-top:8px;"></pre>
     <p class="sub" style="margin:6px 0 0;">If your MCP needs a login (OAuth), click <b>Connect</b> — a Dojo sign-in window opens; approve it and the token is stored and auto-refreshed. Only use the token field below for servers that hand out a plain static token.</p>
     <input id="pipeMcpToken" type="password" placeholder="Static token (only if your MCP uses one; leave blank otherwise)" style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; margin-top:8px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
     <div class="status" id="pipeMcpStatus"></div>
@@ -1691,6 +1693,19 @@ document.getElementById('pipeMcpConnect').onclick = async () => {
     };
     window.addEventListener('message', onMsg);
   } catch (e) { s.textContent = 'Error: ' + e.message; }
+};
+document.getElementById('pipeMcpInspect').onclick = async () => {
+  const s = document.getElementById('pipeMcpStatus');
+  const pre = document.getElementById('pipeMcpTools');
+  s.textContent = 'Listing MCP tools…';
+  try {
+    const res = await fetch('/api/admin/pipeline/mcp/tools');
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || 'Failed to list tools');
+    s.textContent = `${j.count} tool(s) available.`;
+    pre.textContent = j.tools.map((t) => `• ${t.name} — ${t.description}` + (t.inputSchema ? `\n    schema: ${JSON.stringify(t.inputSchema)}` : '')).join('\n');
+    pre.classList.remove('hidden');
+  } catch (e) { s.textContent = 'Error: ' + e.message; pre.classList.add('hidden'); }
 };
 document.getElementById('pipeMcpDisconnect').onclick = async () => {
   const s = document.getElementById('pipeMcpStatus');
