@@ -1491,14 +1491,14 @@ app.get('/api/admin/pipeline/stream', async (req, res) => {
       return res.end();
     }
 
-    // ---- Stage 2: create the repo + PR. Public when we're about to deploy, so
-    // the fresh server can `git clone` it without credentials. ----
+    // ---- Stage 2: create the repo. Always PUBLIC so a deploy server can
+    // `git clone` it without credentials. ----
     const willDeploy = deployEnabled && !!mcpToken && !!mcpUrl;
-    send('status', { message: `Creating a ${willDeploy ? 'public' : 'private'} repo + PR with ${manifest.files.length} file(s)…` });
+    send('status', { message: `Creating a public repo with ${manifest.files.length} file(s)…` });
     const name = `${manifest.repo}-${Date.now().toString(36)}`;
     const { repoUrl, prUrl, cloneUrl } = await github.createRepoWithPR({
       token: GITHUB_TOKEN, ownerEnv: GITHUB_OWNER, name, files: manifest.files,
-      prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary, isPublic: willDeploy,
+      prTitle: `POC: ${manifest.repo}`, prBody: manifest.summary, isPublic: true,
     });
     // Remember the last repo so the "Deploy only" test button can prefill it.
     jobs.setSetting('pipeline_last_repo', repoUrl);

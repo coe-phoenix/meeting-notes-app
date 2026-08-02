@@ -36,9 +36,9 @@ async function resolveOwner(token, ownerEnv) {
 }
 
 // files: [{ path, content }]. Returns { repoUrl, prUrl, cloneUrl, branch }.
-// isPublic=true creates a public repo (so an unauthenticated `git clone` on a
-// deploy server works); default is private.
-async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody, isPublic = false }) {
+// Repos are created PUBLIC by default so an unauthenticated `git clone` on a
+// deploy server works; pass isPublic:false to override.
+async function createRepoWithPR({ token, ownerEnv, name, files, prTitle, prBody, isPublic = true }) {
   if (!token) throw new Error('GITHUB_TOKEN is not configured on the server');
   const { owner, isOrg } = await resolveOwner(token, ownerEnv);
 
