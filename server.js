@@ -953,13 +953,19 @@ async function buildBundleZip(j) {
   return tmpZip;
 }
 
-// Send a job's bundle to Telegram, to the user's remembered chat id (or the env
-// default). The bot token is server-global; only the destination is per-user.
+// Effective Telegram credentials: the user's own DB values win, else the env
+// defaults. Both the bot token and the destination are now per-user.
+const tgToken = (req) => (auth.enabled && req.user && req.user.telegram_bot_token) || TELEGRAM_BOT_TOKEN || '';
+const tgChat = (req) => (auth.enabled && req.user && req.user.telegram_chat_id) || TELEGRAM_CHAT_ID || '';
+
+// Send a job's bundle to Telegram, using the user's own bot token + chat id (or
+// the env defaults as a fallback).
 app.post('/api/jobs/:id/telegram', async (req, res) => {
   const j = ownedJob(req, res, req.params.id);
   if (!j) return;
-  if (!TELEGRAM_BOT_TOKEN) return res.status(500).json({ error: 'Telegram is not configured on the server (TELEGRAM_BOT_TOKEN missing).' });
-  const chatId = (auth.enabled && req.user && req.user.telegram_chat_id) || TELEGRAM_CHAT_ID;
+  const token = tgToken(req);
+  if (!token) return res.status(400).json({ error: 'No Telegram bot token set — add your bot token in the field above first.' });
+  const chatId = tgChat(req);
   if (!chatId) return res.status(400).json({ error: 'No Telegram chat ID set — add one in the field above first.' });
 
   let zipPath = null;
@@ -973,7 +979,7 @@ app.post('/api/jobs/:id/telegram', async (req, res) => {
     form.append('chat_id', String(chatId));
     form.append('caption', `Meeting bundle — ${jobDate(j)}`);
     form.append('document', new Blob([buf], { type: 'application/zip' }), `${jobDate(j)}-meeting-bundle.zip`);
-    const tg = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
+    const tg = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: 'POST', body: form });
     if (!tg.ok) throw new Error(`Telegram send failed (${tg.status}): ${await tg.text()}`);
     res.json({ ok: true });
   } catch (e) {
@@ -1000,6 +1006,7 @@ app.get('/api/me', (req, res) => {
           consentAt: req.user.consent_at, createdAt: req.user.created_at,
           marketingConsentAt: req.user.marketing_consent_at,
           telegramChatId: req.user.telegram_chat_id || '',
+          telegramHasBotToken: !!req.user.telegram_bot_token, // token itself is never echoed
         }
       : null,
   });
@@ -1023,12 +1030,16 @@ app.post('/api/me/marketing', (req, res) => {
   res.json({ ok: true, marketingConsentAt: updated.marketing_consent_at });
 });
 
-// Save (or clear) the user's remembered Telegram destination chat id.
+// Save the user's remembered Telegram destination chat id + (optionally) their
+// own bot token. The chat id clears when blank; the bot token is a secret, so a
+// blank value LEAVES the stored one intact (type a new one to change it).
 app.post('/api/me/telegram', (req, res) => {
   if (!auth.enabled || !req.user) return res.status(400).json({ error: 'No account' });
   const chatId = String((req.body && req.body.chatId) || '').trim();
-  const updated = jobs.setUserTelegram(req.user.id, chatId || null);
-  res.json({ ok: true, telegramChatId: updated.telegram_chat_id || '' });
+  let user = jobs.setUserTelegram(req.user.id, chatId || null);
+  const botToken = (req.body && typeof req.body.botToken === 'string') ? req.body.botToken.trim() : '';
+  if (botToken) user = jobs.setUserTelegramBotToken(req.user.id, botToken);
+  res.json({ ok: true, telegramChatId: user.telegram_chat_id || '', telegramHasBotToken: !!user.telegram_bot_token });
 });
 
 // Account deletion (PDPA): remove all of the user's jobs + files + usage + row.
@@ -1937,19 +1948,21 @@ app.post('/api/send-telegram', async (req, res) => {
     if (!markdown || !markdown.trim()) {
       return res.status(400).json({ error: 'No markdown provided' });
     }
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-      return res.status(500).json({
-        error: 'Telegram not configured yet — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env',
+    const token = tgToken(req);
+    const chatId = tgChat(req);
+    if (!token || !chatId) {
+      return res.status(400).json({
+        error: 'Telegram not configured — add your bot token and chat id above (or set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env).',
       });
     }
 
     const filename = `meeting-notes-${new Date().toISOString().slice(0, 10)}.md`;
     const form = new FormData();
-    form.append('chat_id', TELEGRAM_CHAT_ID);
+    form.append('chat_id', String(chatId));
     form.append('caption', 'New meeting record (reviewed)');
     form.append('document', new Blob([markdown], { type: 'text/markdown' }), filename);
 
-    const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, {
+    const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
       method: 'POST',
       body: form,
     });

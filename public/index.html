@@ -246,7 +246,12 @@
     </div>
 
     <div id="tgRow" class="hidden" style="margin-top:16px;">
-      <label style="display:flex; align-items:center; gap:6px;">Telegram destination
+      <label style="display:flex; align-items:center; gap:6px;">Telegram bot token
+        <span class="help" title="Create a bot in Telegram: message @BotFather, send /newbot, follow the prompts, and copy the token it gives you (looks like 123456789:ABCdef...). It's stored on your account and used to send your bundles.">&#9432;</span>
+      </label>
+      <input id="tgBotToken" type="password" placeholder="Bot token from @BotFather"
+             style="width:100%; box-sizing:border-box; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2a2e37; background:#0f1115; color:#e8e8ea;" />
+      <label style="display:flex; align-items:center; gap:6px; margin-top:10px;">Telegram destination
         <span class="help" title="How to get your chat ID:&#10;1. In Telegram, send any message to your bot (or add the bot to your channel as an admin).&#10;2. Open https://api.telegram.org/bot&lt;YOUR_BOT_TOKEN&gt;/getUpdates in a browser.&#10;3. Copy the numeric &quot;chat.id&quot; (personal chats are positive numbers; channels look like -100...).&#10;Paste it here and Save — it's remembered as your default destination.">&#9432;</span>
       </label>
       <div style="display:flex; gap:8px;">
@@ -1320,6 +1325,9 @@ async function renderJobDetail(id) {
       const tgRow = document.getElementById('tgRow');
       if (ME && ME.authEnabled && ME.user) {
         document.getElementById('tgChatId').value = ME.user.telegramChatId || '';
+        const bt = document.getElementById('tgBotToken');
+        bt.value = '';
+        bt.placeholder = ME.user.telegramHasBotToken ? 'Bot token saved — leave blank to keep, or type a new one' : 'Bot token from @BotFather';
         document.getElementById('tgSaveStatus').textContent = '';
         tgRow.classList.remove('hidden');
       } else {
@@ -1387,19 +1395,23 @@ document.getElementById('jobSendBtn').onclick = async () => {
   }
 };
 
-// Save (remember) the Telegram destination chat id.
+// Save (remember) the Telegram bot token + destination chat id.
 document.getElementById('tgSaveBtn').onclick = async () => {
   const chatId = document.getElementById('tgChatId').value.trim();
+  const botToken = document.getElementById('tgBotToken').value.trim();
   const s = document.getElementById('tgSaveStatus');
   s.textContent = 'Saving…';
   try {
     const res = await fetch('/api/me/telegram', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId, botToken }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Save failed');
-    if (ME && ME.user) ME.user.telegramChatId = data.telegramChatId;
-    s.textContent = data.telegramChatId ? 'Saved ✓ This is now your default destination.' : 'Cleared — will use the server default.';
+    if (ME && ME.user) { ME.user.telegramChatId = data.telegramChatId; ME.user.telegramHasBotToken = data.telegramHasBotToken; }
+    const bt = document.getElementById('tgBotToken');
+    bt.value = '';
+    bt.placeholder = data.telegramHasBotToken ? 'Bot token saved — leave blank to keep, or type a new one' : 'Bot token from @BotFather';
+    s.textContent = data.telegramHasBotToken ? 'Saved ✓ Your bot token + destination are set.' : (data.telegramChatId ? 'Saved ✓ Add a bot token to send.' : 'Cleared — will use the server default.');
   } catch (e) { s.textContent = 'Error: ' + e.message; }
 };
 

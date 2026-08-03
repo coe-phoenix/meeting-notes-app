@@ -110,6 +110,7 @@ ensureColumn('users', 'suspended_at', 'INTEGER'); // admin suspend (Phase 5.5)
 ensureColumn('jobs', 'encrypted', 'INTEGER NOT NULL DEFAULT 0'); // 1 = audio+text encrypted at rest
 ensureColumn('jobs', 'upload_consent_at', 'INTEGER'); // per-upload "I have consent" timestamp
 ensureColumn('users', 'telegram_chat_id', 'TEXT'); // per-user Telegram destination (remembered)
+ensureColumn('users', 'telegram_bot_token', 'TEXT'); // per-user Telegram bot token (overrides the env default)
 
 // Terminal states never get picked up by the worker again.
 const TERMINAL = new Set(['ready', 'failed']);
@@ -209,6 +210,7 @@ const authStmts = {
   setSuspended: db.prepare(`UPDATE users SET suspended_at = ? WHERE id = ?`),
   setAdmin: db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`),
   setTelegram: db.prepare(`UPDATE users SET telegram_chat_id = ? WHERE id = ?`),
+  setTelegramBotToken: db.prepare(`UPDATE users SET telegram_bot_token = ? WHERE id = ?`),
   delUser: db.prepare(`DELETE FROM users WHERE id = ?`),
 
   // Phase 5.5 — per-user wrapped data keys + abuse reports.
@@ -270,6 +272,8 @@ function setUserSuspended(id, suspended) { authStmts.setSuspended.run(suspended 
 function setUserAdmin(id, isAdmin) { authStmts.setAdmin.run(isAdmin ? 1 : 0, id); return getUserById(id); }
 // Per-user Telegram destination (remembered; used as the default when sending).
 function setUserTelegram(id, chatId) { authStmts.setTelegram.run(chatId || null, id); return getUserById(id); }
+// Per-user Telegram bot token (overrides the env default; null clears it).
+function setUserTelegramBotToken(id, token) { authStmts.setTelegramBotToken.run(token || null, id); return getUserById(id); }
 
 // ---------- Phase 5.5: data keys + reports ----------
 // db stays crypto-agnostic: the server wraps/unwraps; here we just persist the
@@ -408,6 +412,7 @@ module.exports = {
   setUserSuspended,
   setUserAdmin,
   setUserTelegram,
+  setUserTelegramBotToken,
   getDataKey,
   saveDataKey,
   rewrapDataKey,
