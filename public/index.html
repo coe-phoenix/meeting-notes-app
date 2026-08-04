@@ -33,6 +33,7 @@
   /* font-size must stay >=16px or iOS Safari zooms the page on focus */
   textarea { width:100%; min-height:280px; background:#0f1115; color:#e8e8ea; border:1px solid #2a2e37; border-radius:8px; padding:12px; font-family: ui-monospace, monospace; font-size:16px; line-height:1.45; box-sizing:border-box; }
   .status { font-size:0.85rem; color:#9a9aa2; margin-top:8px; min-height:1.2em; }
+  .status.err { color:#ff9b9b; font-weight:600; }
   .rec-dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#e25555; margin-right:6px; animation: pulse 1s infinite; }
   @keyframes pulse { 50% { opacity:0.3; } }
   label { display:block; font-size:0.85rem; color:#c8c8cc; margin-bottom:4px; }
@@ -175,7 +176,7 @@
   </div>
   <button class="btn-secondary hidden" id="tabBtn" style="width:100%; margin-top:10px;">Record tab / system audio</button>
   <button class="btn-secondary hidden" id="tabMicBtn" style="width:100%; margin-top:8px;">Record tab + my mic</button>
-  <p class="sub hidden" id="tabHint" style="margin:6px 0 0; font-size:0.8rem;">Desktop Chrome/Edge only. Pick a tab and tick “Share tab audio”. “Tab / system audio” captures the other people in the call; “Tab + my mic” also records your own voice.</p>
+  <p class="sub hidden" id="tabHint" style="margin:6px 0 0; font-size:0.8rem;">Desktop Chrome/Edge only. In the picker choose the <strong>“Chrome Tab”</strong> tab (not Entire Screen or Window), pick the meeting tab, and turn on <strong>“Share tab audio”</strong> — that’s the only way audio is captured. “Tab / system audio” captures the other people in the call; “Tab + my mic” also records your own voice.</p>
   <div class="status" id="recStatus"></div>
   <div class="meter hidden" id="levelMeter"><div id="levelBar"></div></div>
 
@@ -684,6 +685,25 @@ if (canCaptureTab) {
   tabHint.classList.remove('hidden');
 }
 
+// Build a message tailored to WHAT the user shared. The #1 support issue is
+// people picking "Entire Screen" (or a "Window"): Chrome only reliably captures
+// audio from a *tab*, and on macOS screen/window audio isn't captured at all — so
+// the audio track comes back empty. Reading displaySurface lets us name the
+// mistake instead of the vague "no audio was shared".
+function noAudioMessage(display) {
+  const surface = (display.getVideoTracks()[0] &&
+    display.getVideoTracks()[0].getSettings &&
+    display.getVideoTracks()[0].getSettings().displaySurface) || '';
+  if (surface === 'monitor') {
+    return 'You shared your Entire Screen, which can’t capture audio. In the picker, click the “Chrome Tab” tab, pick the meeting tab, and turn on “Share tab audio”.';
+  }
+  if (surface === 'window') {
+    return 'You shared an app Window, which can’t capture audio. In the picker, click the “Chrome Tab” tab, pick the meeting tab, and turn on “Share tab audio”.';
+  }
+  // A tab was picked but the "Share tab audio" toggle was left off.
+  return 'No audio was shared — pick the meeting tab and turn on the “Share tab audio” toggle at the bottom of the picker.';
+}
+
 // Acquire an AUDIO-ONLY stream from a shared tab/window/screen. getDisplayMedia
 // requires video:true, so we grab video too, then immediately drop it and keep
 // only the audio track(s) for the recorder.
@@ -691,8 +711,9 @@ async function acquireTabStream() {
   const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   const audioTracks = display.getAudioTracks();
   if (!audioTracks.length) {
+    const msg = noAudioMessage(display);
     display.getTracks().forEach((t) => t.stop());
-    throw new Error('No audio was shared — in the picker, choose a tab (or your screen) and tick “Share tab audio”.');
+    throw new Error(msg);
   }
   display.getVideoTracks().forEach((t) => t.stop()); // audio only from here
   // If the user hits the browser's native “Stop sharing”, end the recording too.
@@ -707,8 +728,9 @@ async function acquireTabMicStream() {
   const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   const tabAudio = display.getAudioTracks();
   if (!tabAudio.length) {
+    const msg = noAudioMessage(display);
     display.getTracks().forEach((t) => t.stop());
-    throw new Error('No audio was shared — in the picker, choose a tab (or your screen) and tick “Share tab audio”.');
+    throw new Error(msg);
   }
   display.getVideoTracks().forEach((t) => t.stop());
   tabAudio[0].addEventListener('ended', () => { if (recording) stopRecording(); });
@@ -872,9 +894,12 @@ async function startCapture(kind) {
       : await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     teardownMix(); // clean up any partial mix if acquisition failed midway
+    recStatus.classList.add('err');
     recStatus.textContent = (err && err.name === 'NotAllowedError')
       ? (kind === 'mic' ? 'Microphone permission denied.' : 'Screen/tab share was cancelled.')
-      : 'Could not start: ' + (err && err.message ? err.message : err);
+      // acquireTab* already phrases the "wrong surface / no tab audio" cases; show
+      // that message as-is rather than burying it behind a generic prefix.
+      : (err && err.message ? err.message : String(err));
     return;
   }
 
@@ -890,6 +915,7 @@ async function startCapture(kind) {
     return;
   }
 
+  recStatus.classList.remove('err'); // clear any prior "wrong surface" warning
   recording = true;
   captureKind = kind;
   segmentIndex = 0;
