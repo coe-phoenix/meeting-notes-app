@@ -181,9 +181,13 @@
 
   <!-- Revealed after you stop: attach context, then transcribe the recording. -->
   <div id="finishWrap" class="hidden">
+    <div id="recReadyBanner" class="banner-ok" style="margin-top:16px; display:flex; align-items:center; gap:10px;">
+      <span style="font-size:1.4rem; line-height:1;">✅</span>
+      <span><strong>Recording ready<span id="recReadyDur"></span>.</strong> Add photos/PDFs below if you have any, then tap <strong>Transcribe this recording</strong> to process it.</span>
+    </div>
     <label style="margin-top:16px;">Add photos / PDFs (optional — whiteboard, deck, business card)</label>
     <input type="file" id="attachmentUpload" accept="image/*,application/pdf" multiple />
-    <button class="btn-primary" id="finishBtn" style="margin-top:12px; width:100%;">Transcribe this recording</button>
+    <button class="btn-primary" id="finishBtn" style="margin-top:12px; width:100%; font-size:1.05rem;">Transcribe this recording →</button>
   </div>
   <div class="status" id="finishStatus"></div>
 </div>
@@ -424,6 +428,7 @@ let elapsedTimer = null, recStartTime = 0;
 // Pause state: paused flag, when the current pause began, and total paused ms so
 // the elapsed timer can exclude paused time.
 let paused = false, pausedAt = 0, pausedTotalMs = 0;
+let lastRecordingMs = 0; // duration of the just-finished recording, for the "ready" banner
 let wakeLock = null;
 let audioCtx = null, analyser = null, meterRAF = null;
 
@@ -796,7 +801,11 @@ function handleSegmentStop() {
     // User pressed Stop: the audio is captured, but structuring (a paid Claude
     // call) waits for an explicit "Transcribe this recording" click.
     finishWrap.classList.remove('hidden');
-    recStatus.textContent = 'Recording captured. Add any photos/PDFs, then transcribe.';
+    const secs = Math.max(0, Math.round(lastRecordingMs / 1000));
+    const mm = String(Math.floor(secs / 60)).padStart(2, '0'), ss = String(secs % 60).padStart(2, '0');
+    document.getElementById('recReadyDur').textContent = secs > 0 ? ` — ${mm}:${ss} captured` : '';
+    recStatus.textContent = ''; // the ready banner replaces the muted line
+    try { document.getElementById('recReadyBanner').scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { /* older browsers */ }
   }
 }
 
@@ -919,6 +928,7 @@ if (canCaptureTab) {
 function stopRecording() {
   if (!recording) return;
   recording = false;
+  lastRecordingMs = Date.now() - recStartTime - pausedTotalMs; // capture before reset
   paused = false;
   clearTimeout(segmentTimer);
   clearInterval(elapsedTimer);
