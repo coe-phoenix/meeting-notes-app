@@ -1551,6 +1551,9 @@ function router() {
     showView('jobs');
     renderJobsList();
   } else if (hash === '#/admin') {
+    // Admins only. Non-admins who type/paste the URL are bounced home so the
+    // admin shell never renders (the /api/admin/* routes also 403 server-side).
+    if (!(ME && ME.user && ME.user.isAdmin)) { location.hash = '#/'; return; }
     showView('admin');
     renderAdmin();
   } else {
