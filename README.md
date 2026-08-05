@@ -1,8 +1,10 @@
-# Meeting Notes App
+# NoteWise
 
-Record or upload meeting audio (Malaysian multilingual: English / BM / Mandarin, freely mixed)
+**AI notetaker.** Record or upload meeting audio (Malaysian multilingual: English / BM / Mandarin, freely mixed)
 → Soniox transcribes → Claude cleans up and structures it into a markdown meeting record →
 you review/edit → send to Hermes via Telegram.
+
+Open source (MIT). Listing content for the Dojo Marketplace lives in [`MARKETPLACE.md`](MARKETPLACE.md).
 
 ## Setup
 
@@ -277,3 +279,7 @@ The Playwright/HTTP suites require the server running on `:3000`: `PORT=3000 nod
   decrypt), upload rate limiting, admin suspend, and abuse reports. Self-contained.
 - `npm test` — runs all suites (phase 1/2 still need the `:3000` server).
 - `npm run eval` — **Phase 4** eval set (needs `ANTHROPIC_API_KEY`); see above.
+
+## License
+
+Released under the [MIT License](LICENSE). Free to self-host, audit, and modify.
