@@ -9,7 +9,6 @@ const { promisify } = require('util');
 const os = require('os');
 const Anthropic = require('@anthropic-ai/sdk');
 const archiver = require('archiver');
-const icons = require('./icons');
 const jobs = require('./db');
 const prompts = require('./prompts');
 const auth = require('./auth');
@@ -111,22 +110,25 @@ function sessionDir(id) {
 app.use(express.json({ limit: '10mb' }));
 
 // ---------- PWA assets: served before the auth gate ----------
-// Icons and the manifest must be fetchable without credentials, otherwise the
-// install prompt and home-screen icon silently fail behind Basic auth. These
-// contain no private data.
+// Icons, the favicon and the header logo must be fetchable without credentials,
+// otherwise the browser tab icon, install prompt and home-screen icon silently
+// fail behind Basic auth. These are NoteWise branding, no private data. Served
+// straight from public/ so a re-brand only needs the PNGs swapped.
 const ICON_ROUTES = {
-  '/icon-192.png': icons.icon_192,
-  '/icon-512.png': icons.icon_512,
-  '/icon-maskable-512.png': icons.icon_maskable_512,
-  '/apple-touch-icon.png': icons.apple_touch,
-  '/apple-touch-icon-precomposed.png': icons.apple_touch,
-  '/favicon.ico': icons.apple_touch,
+  '/icon-192.png': 'icon-192.png',
+  '/icon-512.png': 'icon-512.png',
+  '/icon-maskable-512.png': 'icon-maskable-512.png',
+  '/apple-touch-icon.png': 'apple-touch-icon.png',
+  '/apple-touch-icon-precomposed.png': 'apple-touch-icon.png',
+  '/favicon-32.png': 'favicon-32.png',
+  '/favicon.ico': 'favicon-32.png',
+  '/notewise-logo.png': 'notewise-logo.png',
 };
 
 app.get(Object.keys(ICON_ROUTES), (req, res) => {
   res.type('image/png');
   res.set('Cache-Control', 'public, max-age=604800');
-  res.send(ICON_ROUTES[req.path]);
+  res.sendFile(path.join(__dirname, 'public', ICON_ROUTES[req.path]));
 });
 
 app.get('/manifest.webmanifest', (req, res) => {
@@ -159,7 +161,7 @@ if (auth.enabled) {
       const pass = decoded.slice(decoded.indexOf(':') + 1);
       if (pass === APP_PASSWORD) return next();
     }
-    res.set('WWW-Authenticate', 'Basic realm="Meeting Notes"');
+    res.set('WWW-Authenticate', 'Basic realm="NoteWise"');
     return res.status(401).send('Authentication required');
   });
 }
@@ -2022,7 +2024,7 @@ function sweepRetention() {
 const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
 
 const server = app.listen(PORT, () => {
-  console.log(`Meeting notes app listening on port ${PORT}`);
+  console.log(`NoteWise app listening on port ${PORT}`);
   // Survive restarts: re-queue any job stranded mid-run by a crash/pm2 restart,
   // then start draining the queue.
   const requeued = jobs.resetStuckJobs();

@@ -73,7 +73,7 @@ async function registerClient({ registration, redirectUri, scope }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_name: 'Meeting Notes AI Pipeline',
+      client_name: 'NoteWise AI Pipeline',
       redirect_uris: [redirectUri],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

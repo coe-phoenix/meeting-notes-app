@@ -3,23 +3,28 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Meeting Notes</title>
+<title>NoteWise</title>
 
 <!-- PWA -->
 <link rel="manifest" href="/manifest.webmanifest" />
 <meta name="theme-color" content="#0f1115" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <!-- iOS standalone mode: no Safari chrome once added to the home screen -->
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Meeting Notes" />
+<meta name="apple-mobile-web-app-title" content="NoteWise" />
 <style>
   :root { color-scheme: dark; }
   body { font-family: -apple-system, system-ui, sans-serif; background:#0f1115; color:#e8e8ea; max-width:640px; margin:0 auto;
          padding:calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(80px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
   h1 { font-size:1.4rem; margin-bottom:4px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom:4px; }
+  .brand img { width:44px; height:44px; flex:none; }
+  .brand h1 { margin:0; font-size:1.6rem; letter-spacing:-0.01em; }
+  .brand h1 .wise { font-weight:400; color:#5ec6b0; }
   p.sub { color:#9a9aa2; margin-top:0; font-size:0.9rem; }
   .card { background:#1a1d24; border:1px solid #2a2e37; border-radius:12px; padding:16px; margin-bottom:16px; }
   button { border:none; border-radius:8px; padding:12px 18px; font-size:1rem; font-weight:600; cursor:pointer; }
@@ -90,8 +95,11 @@
 </head>
 <body>
 
-<h1>Meeting Notes</h1>
-<p class="sub">Record or upload, review, process and summary</p>
+<div class="brand">
+  <img src="/notewise-logo.png" alt="NoteWise logo" />
+  <h1>Note<span class="wise">Wise</span></h1>
+</div>
+<p class="sub">AI notetaker — record or upload, review, process and summarise</p>
 
 <nav id="mainNav">
   <a href="#/" id="nav-home">Record / Upload</a>

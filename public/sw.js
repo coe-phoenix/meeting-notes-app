@@ -1,11 +1,13 @@
 // Bump CACHE_VERSION on every deploy that changes the shell. Old caches are
 // deleted on activate, which prevents the classic PWA failure mode of serving
 // stale JavaScript forever.
-const CACHE_VERSION = 'meeting-notes-v1';
+const CACHE_VERSION = 'notewise-v1';
 
 const SHELL = [
   '/',
   '/manifest.webmanifest',
+  '/favicon-32.png',
+  '/notewise-logo.png',
   '/icon-192.png',
   '/icon-512.png',
 ];
@@ -60,7 +62,7 @@ self.addEventListener('fetch', (event) => {
           (cached) =>
             cached ||
             new Response(
-              '<h1>Offline</h1><p>Meeting Notes needs a connection to transcribe audio.</p>',
+              '<h1>Offline</h1><p>NoteWise needs a connection to transcribe audio.</p>',
               { status: 503, headers: { 'Content-Type': 'text/html' } }
             )
         )

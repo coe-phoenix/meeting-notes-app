@@ -15,7 +15,7 @@ const SESSION_TTL_MS = (parseFloat(process.env.SESSION_TTL_DAYS) > 0
 
 const enabled = process.env.AUTH === 'magic';
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const RESEND_FROM = process.env.RESEND_FROM || 'Meeting Notes <onboarding@resend.dev>';
+const RESEND_FROM = process.env.RESEND_FROM || 'NoteWise <onboarding@resend.dev>';
 const APP_BASE_URL = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
 const ADMIN_EMAILS = new Set(
   (process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
@@ -65,8 +65,8 @@ async function sendMagicLink(email, link) {
     body: JSON.stringify({
       from: RESEND_FROM,
       to: [email],
-      subject: 'Your Meeting Notes login link',
-      html: `<p>Click to sign in to Meeting Notes:</p>
+      subject: 'Your NoteWise login link',
+      html: `<p>Click to sign in to NoteWise:</p>
              <p><a href="${link}">Sign in</a></p>
              <p>This link expires in ${Math.round(TOKEN_TTL_MS / 60000)} minutes and can be used once. If you didn't request it, ignore this email.</p>`,
     }),

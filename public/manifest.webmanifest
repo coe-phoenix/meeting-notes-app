@@ -1,6 +1,6 @@
 {
-  "name": "Meeting Notes",
-  "short_name": "Notes",
+  "name": "NoteWise",
+  "short_name": "NoteWise",
   "description": "Record or upload meeting audio, transcribe it, review, and send to Hermes.",
   "start_url": "/",
   "scope": "/",
