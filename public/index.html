@@ -111,6 +111,7 @@
   <span class="account-actions">
     <span id="accountUsage" class="muted"></span>
     <a class="link" id="marketingLink" title="Product update emails"></a>
+    <a class="link" id="guideLink" href="#/guide" title="Add NoteWise to your phone">📱 Add to phone</a>
     <a class="link hidden" id="adminLink" href="#/admin">Admin</a>
     <a class="link" id="logoutLink">Log out</a>
     <a class="link danger-link" id="deleteAccountLink">Delete account</a>
@@ -130,6 +131,10 @@
       ✓ Check your email for a sign-in link — you can close this tab.
       <div style="margin-top:6px;"><a class="link" id="loginReset">Use a different email</a></div>
     </div>
+    <p class="sub" style="margin:14px 0 0; font-size:0.8rem; border-top:1px solid #2a2e37; padding-top:12px;">
+      📱 On your phone? <strong>Sign in first</strong>, then add NoteWise to your home screen so it
+      opens like a real app. A step-by-step guide is under <strong>“📱 Add to phone”</strong> once you’re in.
+    </p>
   </div>
 </div>
 
@@ -402,6 +407,55 @@
       the operator. We aim to review reports promptly and remove violating content.</p>
       <p class="muted">This is placeholder wording to be reviewed and finalised with counsel before public launch.</p>
     </div>
+  </div>
+</div>
+
+<!-- Setup guide: add NoteWise to the home screen as an app. Kept off the main
+     nav (account bar only) so the record/upload screen stays uncluttered. -->
+<div id="view-guide" class="hidden">
+  <a class="link" href="#/">&larr; Back</a>
+  <div class="card" style="margin-top:12px;">
+    <label>📱 Add NoteWise to your phone</label>
+    <p class="sub" style="margin-top:2px;">
+      NoteWise runs in your browser, but you can add it to your home screen so it opens like a
+      normal app — full screen, its own icon, no address bar.
+    </p>
+
+    <div id="guideStandalone" class="banner-ok hidden" style="margin:12px 0;">
+      ✓ You’re already using the installed app. You’re all set.
+    </div>
+
+    <div class="banner-ok" style="margin:14px 0; background:#3a2e12; border-color:#6b5518; color:#f0d896;">
+      <strong>⚠️ Important — sign in first, then add to your home screen.</strong>
+      <p class="sub" style="margin:6px 0 0; color:#e8d9a8;">
+        On iPhone, the home-screen app keeps its own login, separate from Safari. If you add it
+        <em>before</em> signing in, the home-screen app will still show you as signed out. You’re
+        signed in right now ✓ — so just follow the steps below and it will open already signed in.
+      </p>
+    </div>
+
+    <h3 style="margin:20px 0 8px; font-size:1rem;">iPhone &amp; iPad (Safari)</h3>
+    <ol style="margin:0; padding-left:20px; font-size:0.9rem; line-height:1.7; color:#c8c8cc;">
+      <li>Open NoteWise in <strong>Safari</strong> — not Chrome (Add to Home Screen only works from Safari on iOS).</li>
+      <li>Tap the <strong>Share</strong> button <span class="muted">(the square with an up arrow)</span> at the bottom of the screen.</li>
+      <li>Scroll down and tap <strong>“Add to Home Screen”</strong>.</li>
+      <li>Tap <strong>“Add”</strong> — NoteWise now has its own icon on your home screen.</li>
+    </ol>
+
+    <h3 style="margin:20px 0 8px; font-size:1rem;">Android (Chrome)</h3>
+    <ol style="margin:0; padding-left:20px; font-size:0.9rem; line-height:1.7; color:#c8c8cc;">
+      <li>Open NoteWise in <strong>Chrome</strong>.</li>
+      <li>Tap the <strong>⋮</strong> menu <span class="muted">(top-right)</span>.</li>
+      <li>Tap <strong>“Install app”</strong> or <strong>“Add to Home screen”</strong>.</li>
+      <li>Confirm — NoteWise appears with your other apps.</li>
+    </ol>
+
+    <h3 style="margin:20px 0 8px; font-size:1rem;">If the home-screen app shows you signed out</h3>
+    <p class="sub" style="margin:0; font-size:0.9rem; line-height:1.6;">
+      That happens when the app was added <em>before</em> signing in. Fix it once:
+      <strong>remove</strong> the NoteWise icon from your home screen, make sure you’re signed in
+      here in Safari, then add it again using the steps above. After that it stays signed in.
+    </p>
   </div>
 </div>
 
@@ -1231,6 +1285,7 @@ const views = {
   job: document.getElementById('view-job'),
   admin: document.getElementById('view-admin'),
   terms: document.getElementById('view-terms'),
+  guide: document.getElementById('view-guide'),
 };
 const navHome = document.getElementById('nav-home');
 const navJobs = document.getElementById('nav-jobs');
@@ -1550,6 +1605,11 @@ function router() {
   } else if (hash === '#/jobs') {
     showView('jobs');
     renderJobsList();
+  } else if (hash === '#/guide') {
+    // Show "already installed" note when launched from the home screen.
+    const installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    document.getElementById('guideStandalone').classList.toggle('hidden', !installed);
+    showView('guide');
   } else if (hash === '#/admin') {
     // Admins only. Non-admins who type/paste the URL are bounced home so the
     // admin shell never renders (the /api/admin/* routes also 403 server-side).

@@ -1,7 +1,7 @@
 // Bump CACHE_VERSION on every deploy that changes the shell. Old caches are
 // deleted on activate, which prevents the classic PWA failure mode of serving
 // stale JavaScript forever.
-const CACHE_VERSION = 'notewise-v1';
+const CACHE_VERSION = 'notewise-v2';
 
 const SHELL = [
   '/',
