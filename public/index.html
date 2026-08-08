@@ -124,6 +124,7 @@
     <span id="accountUsage" class="usage-badge"></span>
   </div>
   <div class="account-actions">
+    <a class="chip" id="howtoLink" href="#/howto" title="How to use NoteWise">📖 How to use</a>
     <a class="chip primary" id="guideLink" href="#/guide" title="Add NoteWise to your phone">📱 Add to phone</a>
     <a class="chip hidden" id="adminLink" href="#/admin">Admin</a>
     <a class="chip" id="marketingLink" title="Product update emails"></a>
@@ -543,6 +544,308 @@
       <strong>remove</strong> the NoteWise icon from your home screen, make sure you’re signed in
       here in Safari, then add it again using the steps above. After that it stays signed in.
     </p>
+  </div>
+</div>
+
+<!-- "How to use" walkthrough. Each step shows a faithful mini-mockup of the real
+     screen. All reproduced-screen classes are short + scoped under #view-howto so
+     they never collide with the app's global .card/.badge/.btn-primary styles. -->
+<div id="view-howto" class="hidden">
+  <a class="link" href="#/">&larr; Back</a>
+  <div class="card" style="margin-top:12px;">
+    <style>
+      #view-howto{ --hb:#0f1115; --hpanel:#14171d; --hcard:#1a1d24; --hbord:#2a2e37; --hbord2:#3a4050;
+        --htext:#e8e8ea; --hmuted:#9a9aa2; --hdim:#c8c8cc; --hfaint:#6b7280; --hacc:#5b8def; --haccs:#8fb4ff;
+        --hteal:#5ec6b0; --hwarn:#e2c455; --hdanger:#e25555; --hokbg:#123a1a; --hoktx:#8fe0a0; --hokbd:#1e5c30;
+        --hokgn:#4caf50; --hambg:#3a3410; }
+      #view-howto .hw-intro{ color:var(--hmuted); font-size:0.9rem; line-height:1.55; margin:2px 0 4px; }
+      #view-howto .hw-step{ padding:22px 0; border-top:1px solid rgba(42,46,55,.6); }
+      #view-howto .hw-step:first-of-type{ border-top:none; padding-top:10px; }
+      #view-howto .hw-eyebrow{ display:inline-flex; align-items:center; gap:8px; color:var(--hteal);
+        font-size:.68rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase; margin-bottom:9px; }
+      #view-howto .hw-eyebrow .bar{ width:20px; height:1px; background:var(--hteal); opacity:.6; }
+      #view-howto .hw-eyebrow .num{ font-variant-numeric:tabular-nums; }
+      #view-howto .hw-h{ font-size:1.15rem; margin:0 0 8px; letter-spacing:-.01em; font-weight:700; color:var(--htext); }
+      #view-howto .hw-p{ color:var(--hdim); line-height:1.6; margin:0 0 12px; font-size:0.92rem; }
+      #view-howto .hw-p b{ color:var(--htext); }
+      #view-howto .hw-callout{ display:flex; gap:9px; align-items:flex-start; background:var(--hpanel);
+        border:1px solid var(--hbord); border-left:2px solid var(--hteal); border-radius:8px;
+        padding:10px 12px; font-size:.82rem; color:var(--hdim); line-height:1.5; margin:0 0 14px; }
+      #view-howto .hw-callout b{ color:var(--htext); }
+      #view-howto .hw-anat{ list-style:none; padding:0; margin:0 0 14px; display:grid; gap:7px; }
+      #view-howto .hw-anat li{ display:flex; gap:9px; align-items:baseline; font-size:.86rem; color:var(--hdim); line-height:1.4; }
+      #view-howto .hw-anat .k{ color:var(--htext); font-weight:600; }
+      #view-howto .hw-anat .dot{ width:6px; height:6px; border-radius:50%; background:var(--hacc); flex:none; transform:translateY(3px); }
+      #view-howto .shot{ background:var(--hb); border:1px solid var(--hbord); border-radius:14px; padding:12px 12px 4px;
+        box-shadow:0 16px 40px -24px rgba(0,0,0,.9); }
+      #view-howto .scr{ font-size:13px; line-height:1.4; }
+      #view-howto .scr .brand{ display:flex; align-items:center; gap:9px; margin:2px 0 3px; }
+      #view-howto .scr .brand .mk{ width:24px; height:24px; border-radius:7px; flex:none; background:linear-gradient(135deg,#3a86a8,#5ec6b0 55%,#5b8def); }
+      #view-howto .scr .brand h4{ margin:0; font-size:1rem; font-weight:800; letter-spacing:-.01em; color:var(--htext); }
+      #view-howto .scr .brand h4 .w{ color:var(--hteal); font-weight:500; }
+      #view-howto .scr .psub{ color:var(--hmuted); font-size:.72rem; margin:0 0 11px; line-height:1.4; }
+      #view-howto .scr .c{ background:var(--hcard); border:1px solid var(--hbord); border-radius:11px; padding:13px; margin-bottom:10px; }
+      #view-howto .scr .c:last-child{ margin-bottom:0; }
+      #view-howto .scr .lbl{ display:block; font-size:.72rem; color:var(--hdim); margin:0 0 4px; }
+      #view-howto .scr .s{ color:var(--hmuted); font-size:.72rem; margin:0 0 9px; line-height:1.4; }
+      #view-howto .scr .inp{ border:1px solid var(--hbord); background:var(--hb); color:var(--htext); border-radius:8px; padding:10px; font-size:.8rem; }
+      #view-howto .scr .inp.ph{ color:var(--hfaint); }
+      #view-howto .scr .file{ border:1px dashed var(--hbord); border-radius:8px; padding:9px; font-size:.72rem; color:var(--hmuted); }
+      #view-howto .scr .b{ display:block; width:100%; text-align:center; border:none; border-radius:8px; padding:11px; font-size:.82rem; font-weight:700; margin-top:10px; }
+      #view-howto .scr .b.pri{ background:var(--hacc); color:#fff; }
+      #view-howto .scr .b.sec{ background:var(--hbord); color:var(--htext); }
+      #view-howto .scr .b.dan{ background:var(--hdanger); color:#fff; }
+      #view-howto .scr .b.dis{ opacity:.5; }
+      #view-howto .scr .b.sm{ padding:9px; font-size:.76rem; }
+      #view-howto .scr .r2{ display:flex; gap:8px; }
+      #view-howto .scr .r2 .b{ flex:1; }
+      #view-howto .scr .bn{ border-radius:8px; padding:10px; font-size:.75rem; line-height:1.45; }
+      #view-howto .scr .bn.ok{ background:var(--hokbg); color:var(--hoktx); border:1px solid var(--hokbd); }
+      #view-howto .scr .lk{ color:var(--hacc); font-size:.74rem; }
+      #view-howto .scr .mut{ color:var(--hmuted); font-size:.74rem; }
+      #view-howto .scr .st{ font-size:.72rem; color:var(--hmuted); margin-top:8px; }
+      #view-howto .scr .st.good{ color:var(--hokgn); }
+      #view-howto .scr .nav{ display:flex; gap:7px; margin:2px 0 10px; }
+      #view-howto .scr .nav span{ font-size:.74rem; font-weight:700; padding:6px 11px; border-radius:8px; background:var(--hcard); border:1px solid var(--hbord); color:var(--hdim); }
+      #view-howto .scr .nav span.on{ background:var(--hacc); color:#fff; border-color:var(--hacc); }
+      #view-howto .scr .acct{ background:var(--hpanel); border:1px solid var(--hbord); border-radius:11px; padding:9px 11px; margin-bottom:10px; }
+      #view-howto .scr .acct .em{ font-weight:700; font-size:.76rem; }
+      #view-howto .scr .acct .ub{ font-size:.64rem; color:var(--hmuted); background:var(--hb); border:1px solid var(--hbord); border-radius:999px; padding:2px 8px; margin-left:7px; }
+      #view-howto .scr .acct .cps{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+      #view-howto .scr .cp{ font-size:.62rem; font-weight:700; padding:5px 9px; border-radius:999px; border:1px solid var(--hbord); background:var(--hb); color:var(--hdim); }
+      #view-howto .scr .cp.pri{ border-color:var(--hacc); color:var(--haccs); background:rgba(91,141,239,.09); }
+      #view-howto .scr .cp.dan{ color:#c98b8b; border-color:#3a2626; }
+      #view-howto .scr .mtr{ height:8px; background:var(--hbord); border-radius:4px; overflow:hidden; margin-top:9px; }
+      #view-howto .scr .mtr>span{ display:block; height:100%; width:58%; background:linear-gradient(90deg,#4caf50,#e2c455,#e25555); }
+      #view-howto .scr .recbar{ background:#14171d; border:1px solid var(--hbord); border-radius:14px; padding:10px; display:flex; align-items:center; gap:9px; margin-top:4px; }
+      #view-howto .scr .recbar .t{ flex:1; font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:7px; }
+      #view-howto .scr .recbar .rd{ width:9px; height:9px; border-radius:50%; background:var(--hdanger); flex:none; }
+      #view-howto .scr .recbar small{ font-size:.62rem; color:var(--hmuted); font-weight:600; }
+      #view-howto .scr .recbar .pz{ background:var(--hbord); color:var(--htext); border-radius:12px; padding:11px 14px; font-weight:700; font-size:.78rem; }
+      #view-howto .scr .recbar .sp{ background:#3a1212; color:#ff9a9a; border:1px solid var(--hdanger); border-radius:12px; padding:11px 14px; font-weight:700; font-size:.78rem; }
+      #view-howto .scr .chk{ display:flex; gap:8px; align-items:flex-start; margin-bottom:9px; font-size:.74rem; line-height:1.4; }
+      #view-howto .scr .chk .bx{ width:15px; height:15px; border-radius:4px; flex:none; margin-top:1px; }
+      #view-howto .scr .chk .bx.on{ background:var(--hacc); display:flex; align-items:center; justify-content:center; color:#fff; font-size:10px; }
+      #view-howto .scr .chk .bx.off{ border:1px solid var(--hbord2); }
+      #view-howto .scr .bg{ font-size:.6rem; font-weight:800; text-transform:uppercase; letter-spacing:.04em; padding:3px 8px; border-radius:999px; white-space:nowrap; }
+      #view-howto .scr .bg.tr{ background:var(--hambg); color:var(--hwarn); }
+      #view-howto .scr .bg.rd{ background:var(--hokbg); color:var(--hokgn); }
+      #view-howto .scr .job{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px; border:1px solid var(--hbord); border-radius:10px; margin-bottom:8px; background:var(--hcard); }
+      #view-howto .scr .job .nm{ font-weight:700; font-size:.8rem; }
+      #view-howto .scr .job .mt{ color:var(--hmuted); font-size:.68rem; margin-top:2px; }
+      #view-howto .scr .flh{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+      #view-howto .scr .ta{ background:var(--hb); border:1px solid var(--hbord); border-radius:8px; padding:9px; font-family:ui-monospace,Menlo,monospace; font-size:.68rem; color:var(--hmuted); line-height:1.5; min-height:44px; white-space:pre-wrap; }
+      #view-howto .scr .spin{ display:inline-block; width:11px; height:11px; border:2px solid #444; border-top-color:var(--hwarn); border-radius:50%; vertical-align:-1px; margin-right:6px; }
+      #view-howto .hw-foot{ margin-top:20px; padding-top:16px; border-top:1px solid var(--hbord); color:var(--hmuted); font-size:.86rem; line-height:1.6; }
+      #view-howto .hw-foot b{ color:var(--htext); }
+      @media (prefers-reduced-motion: no-preference){ #view-howto .scr .spin{ animation:hwsp 1s linear infinite; } @keyframes hwsp{ to{ transform:rotate(360deg);} } }
+    </style>
+
+    <label>📖 How to use NoteWise</label>
+    <p class="hw-intro">A quick walkthrough — from your sign-in link all the way to finished, downloadable notes. Each picture below is the real app.</p>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 01</span> · Sign in</div>
+      <h3 class="hw-h">Ask for your sign-in link</h3>
+      <p class="hw-p">Enter your email and tap <b>Email me a sign-in link</b>. There's no password to create or remember.</p>
+      <div class="hw-callout"><span>📱</span><span>On a phone, do this in your browser <b>first</b> — then add NoteWise to your home screen, so the installed app opens already signed in.</span></div>
+      <div class="shot"><div class="scr">
+        <div class="brand"><span class="mk"></span><h4>Note<span class="w">Wise</span></h4></div>
+        <p class="psub">AI notetaker — record or upload, review, process and summarise</p>
+        <div class="c">
+          <div class="lbl">Sign in</div>
+          <p class="s">Enter your email and we'll send you a one-time sign-in link. No password.</p>
+          <div class="inp ph">you@example.com</div>
+          <div class="b pri">Email me a sign-in link</div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 02</span> · Verify</div>
+      <h3 class="hw-h">Open the link in your inbox</h3>
+      <p class="hw-p">We email you a one-time link. Open your inbox and tap <b>Sign in</b> — that verifies you and drops you straight into the app. The link expires after a few minutes and works only once.</p>
+      <div class="shot"><div class="scr">
+        <div class="c">
+          <div class="lbl">Sign in</div>
+          <div class="bn ok">✓ Check your email for a sign-in link — you can close this tab.
+            <div style="margin-top:6px;"><span class="lk">Use a different email</span></div>
+          </div>
+        </div>
+        <div class="c" style="border-style:dashed;">
+          <div class="lbl">✉️ Your inbox</div>
+          <p class="s" style="margin-bottom:8px;">Your NoteWise login link</p>
+          <span class="b pri sm" style="display:inline-block; width:auto; margin-top:0; padding:8px 16px;">Sign in →</span>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 03</span> · First time only</div>
+      <h3 class="hw-h">Confirm consent, once</h3>
+      <p class="hw-p">On your very first sign-in, confirm you have permission to record the people in your audio, then tap <b>Agree &amp; continue</b>. You won't see this again.</p>
+      <div class="shot"><div class="scr">
+        <div class="c">
+          <div class="lbl">Before you start</div>
+          <p class="s">This app records and transcribes conversations. You are responsible for having the consent of everyone in any audio you record or upload.</p>
+          <p class="s">Files auto-delete after 30 days.</p>
+          <div class="chk"><span class="bx on">✓</span><span>I confirm I have consent to record everyone in the audio I submit, and I accept the retention policy above.</span></div>
+          <div class="chk"><span class="bx off"></span><span class="mut" style="font-size:.74rem;">I agree to receive occasional product updates. I can unsubscribe anytime.</span></div>
+          <div class="b pri">Agree &amp; continue</div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 04</span> · Home</div>
+      <h3 class="hw-h">Record live, or upload a file</h3>
+      <p class="hw-p">You land on the home screen with two ways in: <b>record live</b> in the browser, or <b>upload</b> an existing recording — iPhone Voice Memos, WhatsApp voice notes, Zoom recordings.</p>
+      <div class="shot"><div class="scr">
+        <div class="acct">
+          <div><span class="em">you@example.com</span><span class="ub">14.6 min this month</span></div>
+          <div class="cps"><span class="cp pri">📱 Add to phone</span><span class="cp">📖 How to use</span><span class="cp">Log out</span></div>
+        </div>
+        <div class="nav"><span class="on">Record / Upload</span><span>Jobs</span></div>
+        <div class="c">
+          <div class="lbl">Record live</div>
+          <p class="s">Records in the browser. Keep this tab open while recording.</p>
+          <div class="b pri">Start Recording</div>
+          <div class="b sec">Record tab / system audio</div>
+        </div>
+        <div class="c">
+          <div class="lbl">Upload a recording</div>
+          <p class="s">iPhone Voice Memos (.m4a), WhatsApp voice notes, Zoom recordings.</p>
+          <div class="file">Choose file…</div>
+          <div class="b pri dis">Transcribe uploaded file</div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 05</span> · Record</div>
+      <h3 class="hw-h">Press record — watch the level</h3>
+      <p class="hw-p">Tap <b>Start Recording</b>. A bar shows the running time and a live audio meter. <b>Pause</b> anytime, or <b>hold Stop</b> to finish.</p>
+      <div class="hw-callout"><span>⏱️</span><span>Keep the app open and the screen awake while recording — browsers pause the mic if the app goes to the background.</span></div>
+      <div class="shot"><div class="scr">
+        <div class="c">
+          <div class="lbl">Record live</div>
+          <p class="s">Records in the browser. Keep this tab open while recording.</p>
+          <div class="st" style="color:var(--hdanger); font-weight:600;">● Recording…</div>
+          <div class="mtr"><span></span></div>
+        </div>
+        <div class="recbar">
+          <div class="t"><span class="rd"></span>02:14 <small>mic</small></div>
+          <span class="pz">Pause</span>
+          <span class="sp">Hold to stop</span>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 06</span> · Transcribe</div>
+      <h3 class="hw-h">Add context, then transcribe</h3>
+      <p class="hw-p">When you stop, you'll see <b>Recording ready</b>. Attach any photos or PDFs — a whiteboard, a slide deck — then tap <b>Transcribe this recording</b>. Attachments get folded into the summary.</p>
+      <div class="shot"><div class="scr">
+        <div class="c">
+          <div class="lbl">Record live</div>
+          <div class="bn ok" style="display:flex; gap:9px; align-items:center;">
+            <span style="font-size:1.2rem;">✅</span>
+            <span><b>Recording ready (2m 14s).</b> Add photos/PDFs below if you have any, then tap Transcribe.</span>
+          </div>
+          <div class="lbl" style="margin-top:13px;">Add photos / PDFs (optional — whiteboard, deck, business card)</div>
+          <div class="file">Choose files…</div>
+          <div class="b pri">Transcribe this recording →</div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 07</span> · Jobs</div>
+      <h3 class="hw-h">Find everything under Jobs</h3>
+      <p class="hw-p">Every recording lands in the <b>Jobs</b> tab with a colour-coded status, so you can see at a glance what's still working and what's done.</p>
+      <ul class="hw-anat">
+        <li><span class="dot" style="background:var(--hbord2);"></span><span><span class="k">Queued</span> — waiting its turn</span></li>
+        <li><span class="dot" style="background:var(--hwarn);"></span><span><span class="k">Transcribing / Summarising</span> — in progress</span></li>
+        <li><span class="dot" style="background:var(--hokgn);"></span><span><span class="k">Ready</span> — notes are done</span></li>
+      </ul>
+      <div class="shot"><div class="scr">
+        <div class="nav"><span>Record / Upload</span><span class="on">Jobs</span></div>
+        <div class="c">
+          <div class="flh"><div class="lbl" style="margin:0;">Recordings</div><span class="lk">Refresh</span></div>
+          <div style="margin-top:11px;">
+            <div class="job"><div><div class="nm">Team sync — product</div><div class="mt">Aug 8, 2026, 10:04 · 12m · live</div></div><span class="bg tr">transcribing</span></div>
+            <div class="job"><div><div class="nm">Client call.m4a</div><div class="mt">Aug 7, 2026, 16:20 · 8m</div></div><span class="bg tr">summarising</span></div>
+            <div class="job" style="margin-bottom:0;"><div><div class="nm">Standup notes</div><div class="mt">Aug 6, 2026, 09:15 · 6m · live</div></div><span class="bg rd">ready</span></div>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 08</span> · Progress</div>
+      <h3 class="hw-h">Watch it work — or walk away</h3>
+      <p class="hw-p">Open a job to follow progress live: it <b>transcribes</b>, then <b>summarises</b>. You can close the app entirely — it keeps processing on the server.</p>
+      <div class="hw-callout"><span>🗓️</span><span>Each job shows its <b>auto-delete date</b> up front — nothing lingers longer than the retention window.</span></div>
+      <div class="shot"><div class="scr">
+        <span class="lk">← Back to jobs</span>
+        <div class="c" style="margin-top:10px;">
+          <div class="flh">
+            <div><div class="nm" style="font-weight:700;">Team sync — product</div><div class="mut" style="font-size:.68rem; margin-top:2px;">Aug 8, 2026, 10:04 · 12m · live</div></div>
+            <span class="bg tr">transcribing</span>
+          </div>
+          <div class="st"><span class="spin"></span>Transcribing…</div>
+          <div class="r2"><span class="b dan sm">Delete now</span></div>
+          <div class="st mut">Files auto-delete on Sep 7, 2026.</div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="hw-step">
+      <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 09</span> · Done</div>
+      <h3 class="hw-h">Everything in one place</h3>
+      <p class="hw-p">When a job turns <b>ready</b>, its page holds the whole bundle — read it, edit it, send it, or download any piece.</p>
+      <ul class="hw-anat">
+        <li><span class="dot"></span><span><span class="k">Raw transcript</span> — exactly what the engine heard</span></li>
+        <li><span class="dot"></span><span><span class="k">Cleaned transcript</span> — errors fixed, nothing removed</span></li>
+        <li><span class="dot"></span><span><span class="k">Summary</span> — editable, with a <span class="k">faithfulness check</span></span></li>
+        <li><span class="dot"></span><span><span class="k">Send to Telegram</span> — the whole bundle in one tap</span></li>
+        <li><span class="dot"></span><span><span class="k">Downloads</span> — summary, transcripts, audio, or all as a .zip</span></li>
+      </ul>
+      <div class="shot"><div class="scr">
+        <span class="lk">← Back to jobs</span>
+        <div class="c" style="margin-top:10px;">
+          <div class="flh">
+            <div><div class="nm" style="font-weight:700;">Standup notes</div><div class="mut" style="font-size:.68rem; margin-top:2px;">Aug 6, 2026 · 6m · 4.2 MB · live</div></div>
+            <span class="bg rd">ready</span>
+          </div>
+          <div class="st mut">Files auto-delete on Sep 5, 2026.</div>
+        </div>
+        <div class="c">
+          <div class="lbl">Raw transcript (read-only)</div>
+          <div class="ta">So today's standup — Maya's shipping the export fix, Sam is blocked on the API key…</div>
+          <div class="lbl" style="margin-top:12px;">Cleaned transcript (read-only)</div>
+          <div class="ta">So, today's standup: Maya is shipping the export fix. Sam is blocked on the API key…</div>
+          <div class="lbl" style="margin-top:12px;">Summary — review &amp; edit</div>
+          <div class="st good" style="margin-bottom:6px;">✓ Faithfulness: 9/9 claims grounded in the transcript.</div>
+          <div class="ta" style="color:var(--htext);"># Standup — Aug 6
+
+**Decisions**
+- Ship export fix today
+
+**Action items**
+- Maya: export fix
+- Sam: unblock API key</div>
+          <div class="r2"><span class="b sec sm">Save edits</span></div>
+          <div class="b pri">Send bundle to Telegram</div>
+          <div class="lbl" style="margin-top:14px;">Downloads</div>
+          <div class="r2"><span class="b sec sm">Summary .md</span><span class="b sec sm">Raw .txt</span></div>
+          <div class="r2" style="margin-top:8px;"><span class="b sec sm">Cleaned .txt</span><span class="b sec sm">Audio (original)</span></div>
+          <div class="r2" style="margin-top:8px;"><span class="b sec sm">Audio .mp3</span><span class="b pri sm">Download all (.zip)</span></div>
+        </div>
+      </div></div>
+    </section>
+
+    <div class="hw-foot"><b>That's the whole loop.</b> Sign in → record or upload → transcribe → review your notes → send or download. Everything you record lives under <b>Jobs</b> until its auto-delete date.</div>
   </div>
 </div>
 
@@ -1348,6 +1651,7 @@ const views = {
   admin: document.getElementById('view-admin'),
   terms: document.getElementById('view-terms'),
   guide: document.getElementById('view-guide'),
+  howto: document.getElementById('view-howto'),
 };
 const navHome = document.getElementById('nav-home');
 const navJobs = document.getElementById('nav-jobs');
@@ -1669,6 +1973,8 @@ function router() {
   } else if (hash === '#/guide') {
     setGuideAuthState(true);
     showView('guide');
+  } else if (hash === '#/howto') {
+    showView('howto');
   } else if (hash === '#/admin') {
     // Admins only. Non-admins who type/paste the URL are bounced home so the
     // admin shell never renders (the /api/admin/* routes also 403 server-side).
