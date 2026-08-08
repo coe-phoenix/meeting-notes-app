@@ -642,10 +642,136 @@
       #view-howto .hw-foot{ margin-top:20px; padding-top:16px; border-top:1px solid var(--hbord); color:var(--hmuted); font-size:.86rem; line-height:1.6; }
       #view-howto .hw-foot b{ color:var(--htext); }
       @media (prefers-reduced-motion: no-preference){ #view-howto .scr .spin{ animation:hwsp 1s linear infinite; } @keyframes hwsp{ to{ transform:rotate(360deg);} } }
+      /* --- auto-play "quick tour" (a video-like loop built from the mockups) --- */
+      #view-howto .demo{ margin:6px 0 6px; }
+      #view-howto .demo-stage{ position:relative; background:var(--hb); border:1px solid var(--hbord); border-radius:16px;
+        height:452px; overflow:hidden; box-shadow:0 18px 44px -26px rgba(0,0,0,.9); }
+      #view-howto .demo-frame{ position:absolute; inset:0; padding:16px 14px; opacity:0; transform:translateY(10px);
+        transition:opacity .5s ease, transform .5s ease; pointer-events:none; overflow:hidden; }
+      #view-howto .demo-frame.active{ opacity:1; transform:none; }
+      #view-howto .demo-prog{ position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(255,255,255,.07); }
+      #view-howto .demo-prog > span{ display:block; height:100%; width:0; background:var(--hteal); }
+      #view-howto .demo-bar{ display:flex; align-items:center; gap:11px; margin-top:11px; }
+      #view-howto .demo-play{ flex:none; width:34px; height:34px; border-radius:50%; border:1px solid var(--hbord);
+        background:var(--hpanel); color:var(--htext); font-size:.72rem; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0; }
+      #view-howto .demo-play:hover{ border-color:var(--hbord2); }
+      #view-howto .demo-cap{ flex:1; font-size:.85rem; color:var(--hdim); font-weight:600; min-width:0; }
+      #view-howto .demo-dots{ display:flex; gap:6px; }
+      #view-howto .demo-dots span{ width:7px; height:7px; border-radius:50%; background:var(--hbord2); cursor:pointer; transition:background .2s, transform .2s; }
+      #view-howto .demo-dots span.on{ background:var(--hteal); transform:scale(1.3); }
+      @media (prefers-reduced-motion: reduce){ #view-howto .demo-frame{ transition:none; } }
     </style>
 
     <label>📖 How to use NoteWise</label>
     <p class="hw-intro">A quick walkthrough — from your sign-in link all the way to finished, downloadable notes. Each picture below is the real app.</p>
+
+    <div class="demo" aria-label="Quick tour of NoteWise">
+      <div class="demo-stage">
+        <div class="demo-frame active" data-cap="Sign in with a one-time link — no password">
+          <div class="scr">
+            <div class="brand"><span class="mk"></span><h4>Note<span class="w">Wise</span></h4></div>
+            <p class="psub">AI notetaker — record or upload, review, process and summarise</p>
+            <div class="c">
+              <div class="lbl">Sign in</div>
+              <p class="s">Enter your email and we'll send you a one-time sign-in link. No password.</p>
+              <div class="inp ph">you@example.com</div>
+              <div class="b pri">Email me a sign-in link</div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="Record live, or upload an existing file">
+          <div class="scr">
+            <div class="nav"><span class="on">Record / Upload</span><span>Jobs</span></div>
+            <div class="c">
+              <div class="lbl">Record live</div>
+              <p class="s">Records in the browser. Keep this tab open while recording.</p>
+              <div class="b pri">Start Recording</div>
+              <div class="b sec">Record tab / system audio</div>
+            </div>
+            <div class="c">
+              <div class="lbl">Upload a recording</div>
+              <p class="s">Voice Memos (.m4a), WhatsApp notes, Zoom recordings.</p>
+              <div class="b pri dis">Transcribe uploaded file</div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="A live timer and audio meter while you record">
+          <div class="scr">
+            <div class="c">
+              <div class="lbl">Record live</div>
+              <p class="s">Records in the browser. Keep this tab open while recording.</p>
+              <div class="st" style="color:var(--hdanger); font-weight:600;">● Recording…</div>
+              <div class="mtr"><span></span></div>
+            </div>
+            <div class="recbar">
+              <div class="t"><span class="rd"></span>02:14 <small>mic</small></div>
+              <span class="pz">Pause</span><span class="sp">Hold to stop</span>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="Add context, then transcribe in one tap">
+          <div class="scr">
+            <div class="c">
+              <div class="lbl">Record live</div>
+              <div class="bn ok" style="display:flex; gap:9px; align-items:center;"><span style="font-size:1.2rem;">✅</span><span><b>Recording ready (2m 14s).</b> Add photos/PDFs, then tap Transcribe.</span></div>
+              <div class="lbl" style="margin-top:12px;">Add photos / PDFs (optional)</div>
+              <div class="file">Choose files…</div>
+              <div class="b pri">Transcribe this recording →</div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="Every recording, tracked under Jobs">
+          <div class="scr">
+            <div class="nav"><span>Record / Upload</span><span class="on">Jobs</span></div>
+            <div class="c">
+              <div class="flh"><div class="lbl" style="margin:0;">Recordings</div><span class="lk">Refresh</span></div>
+              <div style="margin-top:11px;">
+                <div class="job"><div><div class="nm">Team sync — product</div><div class="mt">Aug 8 · 12m · live</div></div><span class="bg tr">transcribing</span></div>
+                <div class="job"><div><div class="nm">Client call.m4a</div><div class="mt">Aug 7 · 8m</div></div><span class="bg tr">summarising</span></div>
+                <div class="job" style="margin-bottom:0;"><div><div class="nm">Standup notes</div><div class="mt">Aug 6 · 6m · live</div></div><span class="bg rd">ready</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="Watch it transcribe & summarise — or close the app">
+          <div class="scr">
+            <span class="lk">← Back to jobs</span>
+            <div class="c" style="margin-top:10px;">
+              <div class="flh"><div><div class="nm" style="font-weight:700;">Team sync — product</div><div class="mut" style="font-size:.68rem; margin-top:2px;">Aug 8 · 12m · live</div></div><span class="bg tr">transcribing</span></div>
+              <div class="st"><span class="spin"></span>Transcribing…</div>
+              <div class="r2"><span class="b dan sm">Delete now</span></div>
+              <div class="st mut">Files auto-delete on Sep 7, 2026.</div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-frame" data-cap="Notes, transcripts & downloads — all in one place">
+          <div class="scr">
+            <div class="c">
+              <div class="flh"><div><div class="nm" style="font-weight:700;">Standup notes</div><div class="mut" style="font-size:.68rem; margin-top:2px;">ready · 6m · live</div></div><span class="bg rd">ready</span></div>
+            </div>
+            <div class="c">
+              <div class="lbl">Summary — review &amp; edit</div>
+              <div class="st good" style="margin-bottom:6px;">✓ Faithfulness: 9/9 claims grounded.</div>
+              <div class="ta" style="color:var(--htext);"># Standup — Aug 6
+
+**Action items**
+- Maya: export fix
+- Sam: unblock API key</div>
+              <div class="b pri" style="margin-top:10px;">Send bundle to Telegram</div>
+              <div class="r2" style="margin-top:8px;"><span class="b sec sm">Summary .md</span><span class="b sec sm">Download all (.zip)</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="demo-prog"><span></span></div>
+      </div>
+      <div class="demo-bar">
+        <button class="demo-play" type="button" aria-label="Play">▶</button>
+        <span class="demo-cap">Sign in with a one-time link — no password</span>
+        <span class="demo-dots">
+          <span class="on"></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        </span>
+      </div>
+    </div>
 
     <section class="hw-step">
       <div class="hw-eyebrow"><span class="bar"></span><span class="num">Step 01</span> · Sign in</div>
@@ -2502,6 +2628,69 @@ async function init() {
   checkForRecovery();
   router();
 }
+
+// "Quick tour" auto-play demo on the How-to page. Cross-fades through the frames
+// like a silent video; only runs while on screen (IntersectionObserver pauses it
+// when the view is hidden or scrolled away), and honours reduced-motion.
+(function initHowtoDemo() {
+  const demo = document.querySelector('#view-howto .demo');
+  if (!demo) return;
+  const frames = [...demo.querySelectorAll('.demo-frame')];
+  const dots = [...demo.querySelectorAll('.demo-dots span')];
+  const cap = demo.querySelector('.demo-cap');
+  const fill = demo.querySelector('.demo-prog > span');
+  const btn = demo.querySelector('.demo-play');
+  if (!frames.length || !btn) return;
+  const DUR = 3600;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let i = 0, timer = null, playing = false, manualPause = false;
+
+  function paint() {
+    frames.forEach((f, k) => f.classList.toggle('active', k === i));
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+    if (cap) cap.textContent = frames[i].dataset.cap || '';
+    // Restart the progress fill in sync with the frame timer.
+    fill.style.transition = 'none';
+    fill.style.width = '0%';
+    void fill.offsetWidth; // reflow so the next transition actually runs
+    if (playing) { fill.style.transition = 'width ' + DUR + 'ms linear'; fill.style.width = '100%'; }
+  }
+  function advance() { i = (i + 1) % frames.length; paint(); }
+  function play() {
+    if (playing) return;
+    playing = true;
+    btn.textContent = '❚❚'; btn.setAttribute('aria-label', 'Pause');
+    paint();
+    timer = setInterval(advance, DUR);
+  }
+  function pause() {
+    playing = false;
+    btn.textContent = '▶'; btn.setAttribute('aria-label', 'Play');
+    if (timer) { clearInterval(timer); timer = null; }
+    const w = getComputedStyle(fill).width; // freeze the fill where it is
+    fill.style.transition = 'none';
+    fill.style.width = w;
+  }
+  btn.addEventListener('click', () => {
+    if (playing) { manualPause = true; pause(); } else { manualPause = false; play(); }
+  });
+  dots.forEach((d, k) => d.addEventListener('click', () => {
+    i = k;
+    if (playing) { clearInterval(timer); timer = setInterval(advance, DUR); }
+    paint();
+  }));
+
+  paint(); // show the first frame immediately (paused)
+  // Play only while visible; the view is display:none when off-route, which the
+  // observer reads as not-intersecting → paused.
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting && !manualPause && !reduce) play();
+      else if (!e.isIntersecting) pause();
+    });
+  }, { threshold: 0.35 });
+  io.observe(demo);
+})();
 
 init();
 </script>
