@@ -77,14 +77,12 @@ const APP_BASE_URL = (process.env.APP_BASE_URL || '').replace(/\/$/, ''); // use
 // The UI masks providers as "Model 1" / "Model 2". Keep the mapping server-side.
 const MODEL_TO_PROVIDER = { model1: 'soniox', model2: 'gemini' };
 const PROVIDER_TO_MODEL = { soniox: 'model1', gemini: 'model2' };
-function providerAvailable(p) {
-  return p === 'soniox' ? !!SONIOX_API_KEY : p === 'gemini' ? !!GEMINI_API_KEY : false;
-}
-// Accepts a masked model id ('model1'/'model2'), a raw provider, or nothing.
-function resolveProvider(model) {
-  if (MODEL_TO_PROVIDER[model]) return MODEL_TO_PROVIDER[model];
-  if (model === 'soniox' || model === 'gemini') return model;
-  return 'soniox';
+// Single transcription engine: always Gemini. The masked model ids, Soniox
+// helpers, and MODEL_TO_PROVIDER maps are kept so a second engine can be
+// re-enabled later, but every new job now transcribes with Gemini regardless of
+// what the client sends.
+function resolveProvider(_model) {
+  return 'gemini';
 }
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -468,7 +466,7 @@ function decJobText(job, val) {
 // order — raw (from Soniox), cleaned (Claude pass 1), summary (Claude pass 2) —
 // and never overwrites the raw layer.
 async function processJob(job) {
-  const provider = job.stt_provider || 'soniox';
+  const provider = job.stt_provider || 'gemini';
   if (provider === 'soniox' && !SONIOX_API_KEY) throw new Error('SONIOX_API_KEY is not configured on the server');
   if (provider === 'gemini' && !GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
   if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server');
@@ -1763,19 +1761,11 @@ app.post(
 // Client-readable runtime config (behind the auth gate). Lets the UI pick up the
 // segment interval from .env without hardcoding it.
 app.get('/api/config', (req, res) => {
-  // Transcription models are masked ("Model 1"/"Model 2"); expose which are
-  // actually configured so the UI can offer only usable ones.
-  const models = [
-    { id: 'model1', label: 'Model 1', available: providerAvailable('soniox') },
-    { id: 'model2', label: 'Model 2', available: providerAvailable('gemini') },
-  ];
-  const firstAvailable = (models.find((m) => m.available) || models[0]).id;
+  // Single transcription engine (Gemini) — no model choice is exposed to the UI.
   res.json({
     segmentMinutes: SEGMENT_MINUTES,
     segmentMs: Math.round(SEGMENT_MINUTES * 60 * 1000),
     retentionDays: RETENTION_DAYS_EFFECTIVE,
-    models,
-    defaultModel: firstAvailable,
     // Public deployments (auth on) require a per-upload consent tick.
     requireUploadConsent: auth.enabled,
     encryptedAtRest: cs.enabled,

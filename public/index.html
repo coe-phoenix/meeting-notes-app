@@ -172,12 +172,6 @@
 </div>
 
 <div id="view-home">
-<div class="card hidden" id="model-card" style="padding:12px 16px;">
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-    <label style="margin:0;">Transcription model</label>
-    <div class="seg" id="modelToggle"></div>
-  </div>
-</div>
 <div class="card hidden" id="upload-consent-card" style="padding:12px 16px;">
   <label style="display:flex; gap:10px; align-items:flex-start; font-size:0.9rem; color:#e8e8ea; margin:0;">
     <input type="checkbox" id="uploadConsent" style="margin-top:3px;" />
@@ -565,7 +559,7 @@
 let mediaRecorder, recordedChunks = [], uploadedAudioFile = null;
 let currentStream = null, sessionId = null, recording = false, recovering = false;
 let captureKind = 'mic'; // 'mic' | 'tab' | 'tabmic' — source of the current live recording
-let selectedModel = 'model1'; // masked transcription model ('model1'=Soniox, 'model2'=Gemini)
+let selectedModel = 'model2'; // single transcription engine: Gemini (server forces this regardless)
 let requireUploadConsent = false; // per-upload "I have consent" tick (public mode)
 // For 'tabmic': the source tracks (tab audio + mic) and the AudioContext used to
 // mix them, so stopRecording can tear them down (the recorder only sees the mix).
@@ -594,7 +588,6 @@ let audioCtx = null, analyser = null, meterRAF = null;
     if (res.ok) {
       const cfg = await res.json();
       if (cfg.segmentMs > 0) SEGMENT_MS = cfg.segmentMs;
-      if (cfg.models) buildModelToggle(cfg.models, cfg.defaultModel);
       requireUploadConsent = !!cfg.requireUploadConsent;
       if (requireUploadConsent) document.getElementById('upload-consent-card').classList.remove('hidden');
     }
@@ -611,30 +604,6 @@ function needConsentMsg(statusEl) {
   if (statusEl) statusEl.textContent = 'Please tick the consent box first.';
   const card = document.getElementById('upload-consent-card');
   if (card) { card.style.outline = '1px solid #e2c455'; setTimeout(() => { card.style.outline = ''; }, 1500); }
-}
-
-// Build the masked Model 1 / Model 2 toggle. Only shown when 2+ providers are
-// configured (otherwise there's no choice to make).
-function buildModelToggle(models, defaultModel) {
-  const toggle = document.getElementById('modelToggle');
-  const card = document.getElementById('model-card');
-  const available = models.filter((m) => m.available);
-  selectedModel = defaultModel || (available[0] && available[0].id) || 'model1';
-  if (available.length < 2) { card.classList.add('hidden'); return; }
-  toggle.innerHTML = '';
-  for (const m of models) {
-    const b = document.createElement('button');
-    b.textContent = m.label;
-    b.disabled = !m.available;
-    b.classList.toggle('active', m.id === selectedModel);
-    b.onclick = () => {
-      selectedModel = m.id;
-      toggle.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-    };
-    toggle.appendChild(b);
-  }
-  card.classList.remove('hidden');
 }
 
 const recordBtn = document.getElementById('recordBtn');
@@ -1025,7 +994,7 @@ async function finalizeSession() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Finalize failed');
     // The whole recording is now one queued job that transcribes in a single
-    // Soniox pass (accuracy fix). Local audio is safe to drop; jump to the job.
+    // single transcription pass. Local audio is safe to drop; jump to the job.
     idbDeleteSession(sid).catch(() => {});
     status.textContent = 'Queued. You can close the app — it keeps processing.';
     sessionId = null;
@@ -1470,9 +1439,8 @@ async function renderJobDetail(id) {
     if (!res.ok) throw new Error(data.error || 'Job not found');
     const j = data.job;
     document.getElementById('jobName').textContent = j.originalName || j.id;
-    const modelLabel = j.model === 'model2' ? 'Model 2' : 'Model 1';
     document.getElementById('jobMeta').textContent =
-      [fmtDate(j.createdAt), fmtDuration(j.durationMinutes), fmtSize(j.sizeBytes), j.source, modelLabel].filter(Boolean).join(' · ');
+      [fmtDate(j.createdAt), fmtDuration(j.durationMinutes), fmtSize(j.sizeBytes), j.source].filter(Boolean).join(' · ');
     badge.className = 'badge ' + j.status;
     badge.textContent = j.status;
     errorEl.textContent = '';
