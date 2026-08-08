@@ -146,8 +146,8 @@
       <div style="margin-top:6px;"><a class="link" id="loginReset">Use a different email</a></div>
     </div>
     <p class="sub" style="margin:14px 0 0; font-size:0.8rem; border-top:1px solid #2a2e37; padding-top:12px;">
-      📱 On your phone? <strong>Sign in first</strong>, then add NoteWise to your home screen so it
-      opens like a real app. A step-by-step guide is under <strong>“📱 Add to phone”</strong> once you’re in.
+      📱 On your phone? <strong>Sign in first</strong> above, then follow the
+      <strong>“Add to phone”</strong> guide just below to install NoteWise on your home screen.
     </p>
   </div>
 </div>
@@ -421,7 +421,7 @@
 <!-- Setup guide: add NoteWise to the home screen as an app. Kept off the main
      nav (account bar only) so the record/upload screen stays uncluttered. -->
 <div id="view-guide" class="hidden">
-  <a class="link" href="#/">&larr; Back</a>
+  <a class="link" id="guideBack" href="#/">&larr; Back</a>
   <div class="card" style="margin-top:12px;">
     <style>
       #view-guide .figrow { display:flex; gap:12px; flex-wrap:wrap; margin:14px 0 4px; }
@@ -443,8 +443,8 @@
       <strong>⚠️ Important — sign in first, then add to your home screen.</strong>
       <p class="sub" style="margin:6px 0 0; color:#e8d9a8;">
         On iPhone, the home-screen app keeps its own login, separate from Safari. If you add it
-        <em>before</em> signing in, the home-screen app will still show you as signed out. You’re
-        signed in right now ✓ — so just follow the steps below and it will open already signed in.
+        <em>before</em> signing in, the home-screen app will still show you as signed out.
+        <span id="guideSignedState">You’re signed in right now ✓ — so just follow the steps below and it will open already signed in.</span>
       </p>
     </div>
 
@@ -1667,9 +1667,7 @@ function router() {
     showView('jobs');
     renderJobsList();
   } else if (hash === '#/guide') {
-    // Show "already installed" note when launched from the home screen.
-    const installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-    document.getElementById('guideStandalone').classList.toggle('hidden', !installed);
+    setGuideAuthState(true);
     showView('guide');
   } else if (hash === '#/admin') {
     // Admins only. Non-admins who type/paste the URL are bounced home so the
@@ -1749,13 +1747,29 @@ document.getElementById('adminExportBtn').onclick = () => {
 };
 
 // Show one auth screen ('login' | 'consent') or null for the app.
+// The install guide is shared between the post-login page (#/guide) and the
+// logged-out sign-in screen, so its copy + chrome adapt to the context.
+function setGuideAuthState(signedIn) {
+  const back = document.getElementById('guideBack');
+  if (back) back.classList.toggle('hidden', !signedIn); // nowhere to go "back" to pre-login
+  const state = document.getElementById('guideSignedState');
+  if (state) state.textContent = signedIn
+    ? 'You’re signed in right now ✓ — so just follow the steps below and it will open already signed in.'
+    : 'So sign in above first, then follow the steps below — the home-screen app will then open already signed in.';
+  // The "already installed" note only makes sense once signed in inside the app.
+  const installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  document.getElementById('guideStandalone').classList.toggle('hidden', !(signedIn && installed));
+}
+
 function showAuthScreen(which) {
   authViews.login.classList.toggle('hidden', which !== 'login');
   authViews.consent.classList.toggle('hidden', which !== 'consent');
+  const showGuide = which === 'login'; // full install guide sits under the sign-in card
   if (which !== null) {
     mainNav.classList.add('hidden');
     accountBar.classList.add('hidden');
     for (const k in views) views[k].classList.add('hidden');
+    if (showGuide) { views.guide.classList.remove('hidden'); setGuideAuthState(false); }
   } else {
     mainNav.classList.remove('hidden');
   }
