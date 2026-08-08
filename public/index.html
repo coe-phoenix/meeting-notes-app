@@ -146,7 +146,10 @@
       ✓ Check your email for a sign-in link — you can close this tab.
       <div style="margin-top:6px;"><a class="link" id="loginReset">Use a different email</a></div>
     </div>
-    <p class="sub" style="margin:14px 0 0; font-size:0.8rem; border-top:1px solid #2a2e37; padding-top:12px;">
+    <p class="sub" style="margin:14px 0 0; font-size:0.85rem; border-top:1px solid #2a2e37; padding-top:12px;">
+      New to NoteWise? <a class="link" href="#/howto">📖 See how it works →</a>
+    </p>
+    <p class="sub" style="margin:10px 0 0; font-size:0.8rem;">
       📱 On your phone? <strong>Sign in first</strong> above, then follow the
       <strong>“Add to phone”</strong> guide just below to install NoteWise on your home screen.
     </p>
@@ -1955,6 +1958,17 @@ function router() {
     for (const k in views) views[k].classList.toggle('hidden', k !== 'terms');
     return;
   }
+  // The "How to use" walkthrough is public — readable before sign-in so people
+  // can see what NoteWise does first. Shown standalone (no nav/account bar) while
+  // signed out; once fully signed in we fall through to the normal route below.
+  if (location.hash === '#/howto' && ME && ME.authEnabled && !(ME.user && ME.user.consentAt)) {
+    authViews.login.classList.add('hidden');
+    authViews.consent.classList.add('hidden');
+    mainNav.classList.add('hidden');
+    accountBar.classList.add('hidden');
+    for (const k in views) views[k].classList.toggle('hidden', k !== 'howto');
+    return;
+  }
   // If an auth gate is required, (re)show it — also covers returning from #/terms.
   if (ME && ME.authEnabled && (!ME.user || !ME.user.consentAt)) {
     showAuthScreen(!ME.user ? 'login' : 'consent');
@@ -2469,8 +2483,15 @@ async function init() {
     router();
     return;
   }
-  if (!ME.user) { showAuthScreen('login'); return; }
+  // Public routes render on a direct load even when signed out (e.g. someone opens
+  // the "How to use" or Terms link before creating an account).
+  const publicRoute = location.hash === '#/howto' || location.hash === '#/terms';
+  if (!ME.user) {
+    if (publicRoute) { router(); return; }
+    showAuthScreen('login'); return;
+  }
   if (!ME.user.consentAt) {
+    if (publicRoute) { router(); return; }
     document.getElementById('consentRetention').textContent =
       `Recordings and transcripts are automatically deleted ${ME.retentionDays} days after you create them.`;
     showAuthScreen('consent');
